@@ -6,8 +6,9 @@ use thiserror::Error;
 use crate::cache::config::CacheConfig;
 use crate::cache::io::{read_json,write_json};
 use crate::cache::CacheError;
-use crate::rpc::{RpcClient,RpcError};
-use types::BlockContext;
+use crate::rpc::client::RpcClient;
+use crate::rpc::RpcError;
+use types::types::BlockContext;
 
 #[derive(Debug,Clone)]
 pub enum BlockId {
@@ -27,16 +28,52 @@ impl BlockId {
 #[derive(Error,Debug)]
 pub enum FetchError {
     #[error("rpc error: {0}")]
-    Rpc(#[From] RpcError),
+    Rpc(#[from] RpcError),
 
     #[error("cache error : {0}")]
-    Cache(#[From] CacheError),
+    Cache(#[from] CacheError),
 
-    #[error("block not found :{0}")]
+    #[error("block not found :{0:?}")]
     BlockNotFound(BlockId),
 
     #[error("malformed rpc respone for block : missing or invalid field '{field}'")]
     MalformedRespone { field: &'static str},
 }
 
-type Result<T> = std::Result::Result<T , FetchError>;
+type Result<T> = std::result::Result<T , FetchError>;
+
+async fn raw_get_block_by_number(client: &RpcClient, block_id: &BlockId) -> Result<Value> {
+    let raw: Option<Value> = client.request("eth_getBlockByNumber", (block_id.as_rpc_param(), false)).await?;
+
+    raw.ok_or_else(|| FetchError::BlockNotFound(block_id.clone()))
+}
+
+// tag (latest , final etc ) to a concrete block number.
+// if block_id is already a number then it will directly return with no rpc call 
+
+async fn resolve_block_number(client: &RpcClient,block_id: &BlockId) -> Result<u64> {
+    match block_id {
+        BlockId::Number(n) => Ok(*n),
+        BlockId::Tag(_) => {
+            let raw = raw_get_block_by_number(client,block_id).await?;
+            extract_u64(&raw,"number")
+        }
+    }
+}
+
+fn extract_u64(raw: &Value, field: &'static str) -> Result<u64> {
+    let s = raw
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or(FetchError::MalformedRespone { field })?;
+    u64::from_str_radix(s.trim_start_matches("0x"), 16)
+        .map_err(|_| FetchError::MalformedRespone { field })
+}
+pub async fn fetch_block_metadata(
+    client: &RpcClient,
+    cache: &CacheConfig,
+    chain_id: u64,
+    block_id: BlockId,
+) -> Result<BlockContext> {
+    todo!()
+}
