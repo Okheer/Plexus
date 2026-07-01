@@ -66,9 +66,34 @@ fn extract_u64(raw: &Value, field: &'static str) -> Result<u64> {
         .get(field)
         .and_then(Value::as_str)
         .ok_or(FetchError::MalformedRespone { field })?;
-    u64::from_str_radix(s.trim_start_matches("0x"), 16)
-        .map_err(|_| FetchError::MalformedRespone { field })
+    parse_hex_u64(s).map_err(|_| FetchError::MalformedRespone { field})
 }
+
+fn extract_b256(raw: &Value , field: &'static str ) -> Result<B256> {
+    let s = raw
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or(FetchError::MalformedRespone {field})?;
+    B256::from_str(s).map_err(|_| FetchError::MalformedRespone { field}) 
+}
+
+fn extract_address(raw: &Value, field: &'static str ) -> Result<Address> {
+    let s = raw 
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or(FetchError::MalformedRespone {field})?;
+    Address::from_str(s).map_err(|_| FetchError::MalformedRespone {field})
+}
+
+fn parse_hex_u64(s: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+    u64::from_str_radix(s.trim_start_matches("0x"),16)
+}
+
+fn parse_hex_u128(s: &str) -> Result<u128> {
+    u128::from_str_radix(s.trim_start_matches("0x"),16)
+        .map_err(|_| FetchError::MalformedRespone { field: "baseFeePerGas"})
+}
+
 pub async fn fetch_block_metadata(
     client: &RpcClient,
     cache: &CacheConfig,
