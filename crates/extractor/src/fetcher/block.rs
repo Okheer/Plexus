@@ -37,7 +37,7 @@ pub enum FetchError {
     BlockNotFound(BlockId),
 
     #[error("malformed rpc respone for block : missing or invalid field '{field}'")]
-    MalformedRespone { field: &'static str},
+    MalformedResponse { field: &'static str},
 }
 
 type Result<T> = std::result::Result<T , FetchError>;
@@ -65,24 +65,24 @@ fn extract_u64(raw: &Value, field: &'static str) -> Result<u64> {
     let s = raw
         .get(field)
         .and_then(Value::as_str)
-        .ok_or(FetchError::MalformedRespone { field })?;
-    parse_hex_u64(s).map_err(|_| FetchError::MalformedRespone { field})
+        .ok_or(FetchError::MalformedResponse { field })?;
+    parse_hex_u64(s).map_err(|_| FetchError::MalformedResponse { field})
 }
 
 fn extract_b256(raw: &Value , field: &'static str ) -> Result<B256> {
     let s = raw
         .get(field)
         .and_then(Value::as_str)
-        .ok_or(FetchError::MalformedRespone {field})?;
-    B256::from_str(s).map_err(|_| FetchError::MalformedRespone { field}) 
+        .ok_or(FetchError::MalformedResponse {field})?;
+    B256::from_str(s).map_err(|_| FetchError::MalformedResponse { field}) 
 }
 
 fn extract_address(raw: &Value, field: &'static str ) -> Result<Address> {
     let s = raw 
         .get(field)
         .and_then(Value::as_str)
-        .ok_or(FetchError::MalformedRespone {field})?;
-    Address::from_str(s).map_err(|_| FetchError::MalformedRespone {field})
+        .ok_or(FetchError::MalformedResponse {field})?;
+    Address::from_str(s).map_err(|_| FetchError::MalformedResponse {field})
 }
 
 fn parse_hex_u64(s: &str) -> std::result::Result<u64, std::num::ParseIntError> {
@@ -91,8 +91,55 @@ fn parse_hex_u64(s: &str) -> std::result::Result<u64, std::num::ParseIntError> {
 
 fn parse_hex_u128(s: &str) -> Result<u128> {
     u128::from_str_radix(s.trim_start_matches("0x"),16)
-        .map_err(|_| FetchError::MalformedRespone { field: "baseFeePerGas"})
+        .map_err(|_| FetchError::MalformedResponse { field: "baseFeePerGas"})
 }
+
+fn parse_block_context(raw: &Value, chain_id: u64) -> Result<BlockContext> {
+    let number = extract_u64(raw, "number")?;
+    let hash = extract_b256(raw, "hash")?;
+    let parent_hash = extract_b256(raw, "parentHash")?;
+    let coinbase = extract_address(raw, "miner")?;
+    let timestamp = extract_u64(raw, "timestamp")?;
+    let gas_limit = extract_u64(raw, "gasLimit")?;
+    let gas_used = extract_u64(raw, "gasUsed")?;
+
+    // generally base fee is absent on EIP-1559 blocks 
+    let base_fee_per_gas = raw
+        .get("baseFeePerGas")
+        .and_then(Value::as_str)
+        .map(|s| parse_hex_u128(s))
+        .transpose()?;
+
+    let tx_hashes = raw
+        .get("transactions")
+        .and_then(Value::as_array)
+        .ok_or(FetchError::MalformedResponse { field: "transactions" })?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or(FetchError::MalformedResponse { field: "transactions[]" })
+                .and_then(|s| {
+                    B256::from_str(s).map_err(|_| FetchError::MalformedResponse {
+                        field: "transactions[]",
+                    })
+                })
+        })
+        .collect::<Result<Vec<B256>>>()?;
+
+    Ok(BlockContext {
+        number,
+        hash,
+        parent_hash,
+        coinbase,
+        chain_id,
+        timestamp,
+        base_fee_per_gas,
+        gas_limit,
+        gas_used,
+        tx_hashes,
+    })
+}
+
 
 pub async fn fetch_block_metadata(
     client: &RpcClient,
