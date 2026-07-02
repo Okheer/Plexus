@@ -61,6 +61,8 @@ async fn resolve_block_number(client: &RpcClient,block_id: &BlockId) -> Result<u
     }
 }
 
+//field extraction helpers
+
 fn extract_u64(raw: &Value, field: &'static str) -> Result<u64> {
     let s = raw
         .get(field)
@@ -140,12 +142,33 @@ fn parse_block_context(raw: &Value, chain_id: u64) -> Result<BlockContext> {
     })
 }
 
-
+/// Fetches block-level metadata, using the local cache when available
+/// Order of operations (per spec):
+/// 1. Resolve `block_id` to a concrete block number via RPC if it's a tag.
+/// 2. Check cache for `block_header.json` at that number.
+/// 3. On hit, return the cached value.
+/// 4. On miss, fetch from RPC, write atomically to cache, then return.
 pub async fn fetch_block_metadata(
     client: &RpcClient,
     cache: &CacheConfig,
     chain_id: u64,
     block_id: BlockId,
 ) -> Result<BlockContext> {
-    todo!()
+    let block_number = resolve_block_number(client, &block_id).await?;
+
+    let path = cache.block_header_path(chain_id, block_number);
+
+    match read_json::<BlockContext>(&path) {
+        Ok(ctx) => return Ok(ctx),
+        Err(CacheError::NotFound(_)) => {} // fall through to RPC fetch
+        Err(CacheError::Malformed { .. }) => {} // corrupt file, refetch and overwrite
+        Err(e) => return Err(e.into()),         // real IO failure, propagate
+    }
+
+    let raw = raw_get_block_by_number(client, &BlockId::Number(block_number)).await?;
+    let ctx = parse_block_context(&raw, chain_id)?;
+
+    write_json(&path, &ctx)?;
+
+    Ok(ctx)
 }
