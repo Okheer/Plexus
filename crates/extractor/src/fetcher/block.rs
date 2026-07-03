@@ -114,7 +114,7 @@ fn parse_block_context(raw: &Value, chain_id: u64) -> Result<BlockContext> {
     let base_fee_per_gas = raw
         .get("baseFeePerGas")
         .and_then(Value::as_str)
-        .map(|s| parse_hex_u128(s))
+        .map(parse_hex_u128)
         .transpose()?;
 
     let tx_hashes = raw
