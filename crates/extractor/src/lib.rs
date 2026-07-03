@@ -1,3 +1,3 @@
 pub mod cache;
-pub mod rpc;
 pub mod fetcher;
+pub mod rpc;
