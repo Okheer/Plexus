@@ -1,13 +1,12 @@
 use alloy_primitives::{Address, B256};
 use serde_json::Value;
 use std::str::FromStr;
-use thiserror::Error;
 
+use super::error::FetchError;
 use crate::cache::config::CacheConfig;
 use crate::cache::io::{read_json, write_json};
 use crate::cache::CacheError;
 use crate::rpc::client::RpcClient;
-use crate::rpc::RpcError;
 use types::types::BlockContext;
 
 #[derive(Debug, Clone)]
@@ -23,21 +22,6 @@ impl BlockId {
             BlockId::Tag(t) => t.clone(),
         }
     }
-}
-
-#[derive(Error, Debug)]
-pub enum FetchError {
-    #[error("rpc error: {0}")]
-    Rpc(#[from] RpcError),
-
-    #[error("cache error : {0}")]
-    Cache(#[from] CacheError),
-
-    #[error("block not found :{0:?}")]
-    BlockNotFound(BlockId),
-
-    #[error("malformed rpc respone for block : missing or invalid field '{field}'")]
-    MalformedResponse { field: &'static str },
 }
 
 type Result<T> = std::result::Result<T, FetchError>;

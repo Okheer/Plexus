@@ -1,2 +1,5 @@
 mod block;
-pub use block::{fetch_block_metadata, BlockId, FetchError};
+mod error;
+
+pub use block::{fetch_block_metadata, BlockId};
+pub use error::FetchError;
