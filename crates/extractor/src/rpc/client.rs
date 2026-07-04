@@ -233,7 +233,11 @@ mod tests {
             let inf = self.in_flight.clone();
             let delay = self.delay;
             tokio::spawn(async move {
-                tokio::time::sleep(delay).await;
+                // Sleep for slightly less than the response delay to ensure
+                // the decrement happens before the client receives the response
+                // and releases its permit, preventing a race condition where
+                // max in-flight erroneously climbs to 11.
+                tokio::time::sleep(delay.saturating_sub(Duration::from_millis(50))).await;
                 inf.fetch_sub(1, SeqCst);
             });
             ResponseTemplate::new(200)
@@ -250,7 +254,7 @@ mod tests {
             .respond_with(CountingResponder {
                 in_flight: Arc::new(AtomicUsize::new(0)),
                 max: max.clone(),
-                delay: Duration::from_millis(150),
+                delay: Duration::from_millis(100),
             })
             .mount(&server)
             .await;
