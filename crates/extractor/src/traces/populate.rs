@@ -3,6 +3,7 @@ use crate::rpc::client::RpcClient;
 use alloy_primitives::B256;
 use std::sync::Arc;
 use tokio::task::JoinSet;
+use types::types::BlockContext;
 
 #[derive(Debug)]
 pub struct TraceFetchSummary {
