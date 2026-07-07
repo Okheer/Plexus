@@ -107,7 +107,7 @@ async fn fetch_and_write_traces(
 /// Reads the cached block_header.json to get list of txn hashes
 /// Already cached tx_{Hash},json files are skipped
 /// Missing file are concuurently fetched by 'debug_traceTransaction'
-pub async fn populate_trace(
+pub async fn populate_traces(
     client: Arc<RpcClient>,
     cache: Arc<CacheConfig>,
     chain_id: u64,
@@ -126,8 +126,7 @@ pub async fn populate_trace(
                 source: e,
             },
             other => TraceError::Io(other),
-        })
-        .unwrap();
+        })?;
 
     tracing::info!(
         block_number,
@@ -173,8 +172,8 @@ mod tests {
     use alloy_primitives::B256;
     use std::fs::{create_dir_all, File};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tempfile::tempdir;
-    use wiremock::matchers::{method, path};
+    use tempfile::{TempDir,tempdir};
+    use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     // Define a struct that implements Respond
@@ -183,7 +182,7 @@ mod tests {
     }
 
     impl Respond for FailFirstResponder {
-        fn respond(&self, req: &Request) -> ResponseTemplate {
+        fn respond(&self, _req: &Request) -> ResponseTemplate {
             let n = self.call_count.fetch_add(1, Ordering::Relaxed);
             if n == 0 {
                 // First call fails
@@ -197,28 +196,34 @@ mod tests {
             }
         }
     }
+    
+    // Setting environment once
+    fn setup_env() -> (TempDir, u64, u64) {
+        let temp_dir = tempdir().unwrap();
+        let chain_id = 1;
+        let block_number = 100;
+        
+        (temp_dir, chain_id, block_number)
+    }
 
     #[test]
     fn test_partial_cache_fetches_only_missing() {
-        //create temp setup
-        let temp_dir = tempdir().unwrap();
+         
+        let (temp_dir,chain_id,block_number) = setup_env();
         let cache = CacheConfig::with_root(temp_dir.path().to_path_buf());
-
-        let chain_id = 1u64;
-        let block_number = 100u64;
 
         let hash_cached_1 = B256::from([0x11; 32]);
         let hash_cached_2 = B256::from([0x22; 32]);
         let hash_missing = B256::from([0x33; 32]);
 
-        let allHashes = vec![hash_cached_1, hash_cached_2, hash_missing];
+        let all_hashes = vec![hash_cached_1, hash_cached_2, hash_missing];
 
         //manually flush tx_json file
         create_dir_all(cache.block_dir(chain_id, block_number)).unwrap();
         File::create(cache.tx_path(chain_id, block_number, &hash_cached_1)).unwrap();
         File::create(cache.tx_path(chain_id, block_number, &hash_cached_2)).unwrap();
 
-        let (hits, missed) = partition_hashes(&cache, chain_id, block_number, allHashes);
+        let (hits, missed) = partition_hashes(&cache, chain_id, block_number, all_hashes);
 
         assert_eq!(hits.len(), 2);
         assert!(hits.contains(&hash_cached_1));
@@ -226,6 +231,21 @@ mod tests {
 
         assert_eq!(missed[0], hash_missing);
     }
+
+    #[tokio::test]
+    async fn test_missing_block_header_returns_trace_error(){
+        //temp file
+        let (temp_dir,chain_id,block_number) = setup_env();
+
+        let mock_server = MockServer::start().await;
+        let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+
+        //Call populate_trace with a chain_id and block_number that has no block_header.json in that folder.
+        let result= populate_traces(client,cache,chain_id,block_number).await;
+        //Assert that the result is Err(TraceError::BlockHeaderNotCached { .. }).
+        assert!(matches!(result, Err(TraceError::BlockHeaderNotCached { .. })));
+    } 
 
     #[tokio::test]
     async fn test_no_cache_fetches_all_and_writes_to_disk() {
@@ -239,19 +259,16 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let temp_dir = tempdir().unwrap();
-        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
-
-        let chain_id = 1u64;
-        let block_number = 100u64;
+        let (temp_dir,chain_id,block_number) = setup_env();
 
         let hash_cached_1 = B256::from([0x11; 32]);
         let hash_cached_2 = B256::from([0x22; 32]);
         let to_fetch = vec![hash_cached_1, hash_cached_2];
 
         let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
-        let (fetched, _failed) =
+        let (_fetched, _failed) =
             fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
 
         //checking if the cache are being writte on disc
