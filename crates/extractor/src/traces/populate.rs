@@ -172,9 +172,31 @@ mod tests {
     use crate::cache::config::CacheConfig;
     use alloy_primitives::B256;
     use std::fs::{create_dir_all, File};
+    use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::tempdir;
     use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+    // Define a struct that implements Respond
+    struct FailFirstResponder {
+        call_count: Arc<AtomicU32>,
+    }
+
+    impl Respond for FailFirstResponder {
+        fn respond(&self, req: &Request) -> ResponseTemplate {
+            let n = self.call_count.fetch_add(1, Ordering::Relaxed);
+            if n == 0 {
+                // First call fails
+                // error(404) is a permanent error thus it will not retry
+                ResponseTemplate::new(404)
+            } else {
+                // All others succeed
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "pre": {}, "post": {} }
+                }))
+            }
+        }
+    }
 
     #[test]
     fn test_partial_cache_fetches_only_missing() {
@@ -239,5 +261,43 @@ mod tests {
         assert!(cache
             .tx_path(chain_id, block_number, &hash_cached_2)
             .exists());
+    }
+
+    #[tokio::test]
+    async fn rpc_failure_on_one_hash_does_not_fail_others() {
+        let mock_server = MockServer::start().await;
+        let call_count = Arc::new(AtomicU32::new(0));
+        Mock::given(method("POST"))
+            .respond_with(FailFirstResponder { call_count })
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = tempdir().unwrap();
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+        let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+
+        let chain_id = 1u64;
+        let block_number = 100u64;
+
+        let hash_a = B256::from([0xAA; 32]);
+        let hash_b = B256::from([0xBB; 32]);
+        let hash_c = B256::from([0xCC; 32]);
+
+        let (fetched, failed) =
+            fetch_and_write_traces(client, cache.clone(), 1, 100, vec![hash_a, hash_b, hash_c])
+                .await;
+        // One failed, two succeeded — batch was NOT aborted
+        assert_eq!(fetched.len(), 2);
+        assert_eq!(failed.len(), 1);
+
+        let files_on_disk = [hash_a, hash_b, hash_c]
+            .iter()
+            .filter(|h| cache.tx_path(chain_id, block_number, h).exists())
+            .count();
+        assert_eq!(
+            files_on_disk, 2,
+            "expected 2 files on disk, found {}",
+            files_on_disk
+        );
     }
 }
