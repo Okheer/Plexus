@@ -115,18 +115,17 @@ pub async fn populate_traces(
 ) -> Result<TraceFetchSummary, TraceError> {
     // read cache file and load the txn from header
     let header_path = cache.block_header_path(chain_id, block_number);
-    let block_ctx = read_json::<BlockContext>(&header_path)
-        .map_err(|e| match e {
-            CacheError::NotFound(_) => TraceError::BlockHeaderNotCached {
-                chain_id,
-                block_number,
-            },
-            CacheError::Malformed { .. } => TraceError::BlockHeaderMalformed {
-                block_number,
-                source: e,
-            },
-            other => TraceError::Io(other),
-        })?;
+    let block_ctx = read_json::<BlockContext>(&header_path).map_err(|e| match e {
+        CacheError::NotFound(_) => TraceError::BlockHeaderNotCached {
+            chain_id,
+            block_number,
+        },
+        CacheError::Malformed { .. } => TraceError::BlockHeaderMalformed {
+            block_number,
+            source: e,
+        },
+        other => TraceError::Io(other),
+    })?;
 
     tracing::info!(
         block_number,
@@ -172,7 +171,7 @@ mod tests {
     use alloy_primitives::B256;
     use std::fs::{create_dir_all, File};
     use std::sync::atomic::{AtomicU32, Ordering};
-    use tempfile::{TempDir,tempdir};
+    use tempfile::{tempdir, TempDir};
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -196,20 +195,19 @@ mod tests {
             }
         }
     }
-    
+
     // Setting environment once
     fn setup_env() -> (TempDir, u64, u64) {
         let temp_dir = tempdir().unwrap();
         let chain_id = 1;
         let block_number = 100;
-        
+
         (temp_dir, chain_id, block_number)
     }
 
     #[test]
     fn test_partial_cache_fetches_only_missing() {
-         
-        let (temp_dir,chain_id,block_number) = setup_env();
+        let (temp_dir, chain_id, block_number) = setup_env();
         let cache = CacheConfig::with_root(temp_dir.path().to_path_buf());
 
         let hash_cached_1 = B256::from([0x11; 32]);
@@ -233,19 +231,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_missing_block_header_returns_trace_error(){
+    async fn test_missing_block_header_returns_trace_error() {
         //temp file
-        let (temp_dir,chain_id,block_number) = setup_env();
+        let (temp_dir, chain_id, block_number) = setup_env();
 
         let mock_server = MockServer::start().await;
         let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         //Call populate_trace with a chain_id and block_number that has no block_header.json in that folder.
-        let result= populate_traces(client,cache,chain_id,block_number).await;
+        let result = populate_traces(client, cache, chain_id, block_number).await;
         //Assert that the result is Err(TraceError::BlockHeaderNotCached { .. }).
-        assert!(matches!(result, Err(TraceError::BlockHeaderNotCached { .. })));
-    } 
+        assert!(matches!(
+            result,
+            Err(TraceError::BlockHeaderNotCached { .. })
+        ));
+    }
 
     #[tokio::test]
     async fn test_no_cache_fetches_all_and_writes_to_disk() {
@@ -259,7 +260,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (temp_dir,chain_id,block_number) = setup_env();
+        let (temp_dir, chain_id, block_number) = setup_env();
 
         let hash_cached_1 = B256::from([0x11; 32]);
         let hash_cached_2 = B256::from([0x22; 32]);
