@@ -235,8 +235,8 @@ mod tests {
         //temp file
         let (temp_dir, chain_id, block_number) = setup_env();
 
-        let mock_server = MockServer::start().await;
-        let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+        // Added dummy URL as the test never expects to connect to it
+        let client = Arc::new(RpcClient::new("http://localhost".to_string()).unwrap());
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         //Call populate_trace with a chain_id and block_number that has no block_header.json in that folder.
