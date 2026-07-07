@@ -112,7 +112,7 @@ pub async fn populate_trace(
     cache: Arc<CacheConfig>,
     chain_id: u64,
     block_number: u64,
-)-> Result<TraceFetchSummary, TraceError>{
+) -> Result<TraceFetchSummary, TraceError> {
     // read cache file and load the txn from header
     let header_path = cache.block_header_path(chain_id, block_number);
     let block_ctx = read_json::<BlockContext>(&header_path)
@@ -164,4 +164,42 @@ pub async fn populate_trace(
         "trace population complete"
     );
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::config::CacheConfig;
+    use alloy_primitives::B256;
+    use std::fs::create_dir_all;
+    use tempfile::tempdir;
+
+    #[test]
+    fn partial_cache_fetches_only_missing() {
+        //create temp setup
+        let temp_dir = tempdir().unwrap();
+        let cache = CacheConfig::with_root(temp_dir.path().to_path_buf());
+
+        let chain_id = 1u64;
+        let block_number = 100u64;
+
+        let hash_cached_1 = B256::from([0x11; 32]);
+        let hash_cached_2 = B256::from([0x22; 32]);
+        let hash_missing = B256::from([0x33; 32]);
+
+        let allHashes = vec![hash_cached_1, hash_cached_2, hash_missing];
+
+        //manually flush tx_json file
+        create_dir_all(cache.block_dir(chain_id, block_number)).unwrap();
+        create_dir_all(cache.tx_path(chain_id, block_number, &hash_cached_1)).unwrap();
+        create_dir_all(cache.tx_path(chain_id, block_number, &hash_cached_2)).unwrap();
+
+        let (hits, missed) = partition_hashes(&cache, chain_id, block_number, allHashes);
+
+        assert_eq!(hits.len(), 2);
+        assert!(hits.contains(&hash_cached_1));
+        assert!(hits.contains(&hash_cached_2));
+
+        assert_eq!(missed[0], hash_missing);
+    }
 }
