@@ -171,11 +171,13 @@ mod tests {
     use super::*;
     use crate::cache::config::CacheConfig;
     use alloy_primitives::B256;
-    use std::fs::create_dir_all;
+    use std::fs::{create_dir_all, File};
     use tempfile::tempdir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn partial_cache_fetches_only_missing() {
+    fn test_partial_cache_fetches_only_missing() {
         //create temp setup
         let temp_dir = tempdir().unwrap();
         let cache = CacheConfig::with_root(temp_dir.path().to_path_buf());
@@ -191,8 +193,8 @@ mod tests {
 
         //manually flush tx_json file
         create_dir_all(cache.block_dir(chain_id, block_number)).unwrap();
-        create_dir_all(cache.tx_path(chain_id, block_number, &hash_cached_1)).unwrap();
-        create_dir_all(cache.tx_path(chain_id, block_number, &hash_cached_2)).unwrap();
+        File::create(cache.tx_path(chain_id, block_number, &hash_cached_1)).unwrap();
+        File::create(cache.tx_path(chain_id, block_number, &hash_cached_2)).unwrap();
 
         let (hits, missed) = partition_hashes(&cache, chain_id, block_number, allHashes);
 
@@ -201,5 +203,41 @@ mod tests {
         assert!(hits.contains(&hash_cached_2));
 
         assert_eq!(missed[0], hash_missing);
+    }
+
+    #[tokio::test]
+    async fn test_no_cache_fetches_all_and_writes_to_disk() {
+        //setting up mock server
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "pre": {}, "post": {} }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let temp_dir = tempdir().unwrap();
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+
+        let chain_id = 1u64;
+        let block_number = 100u64;
+
+        let hash_cached_1 = B256::from([0x11; 32]);
+        let hash_cached_2 = B256::from([0x22; 32]);
+        let to_fetch = vec![hash_cached_1, hash_cached_2];
+
+        let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+
+        let (fetched, _failed) =
+            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
+
+        //checking if the cache are being writte on disc
+        assert!(cache
+            .tx_path(chain_id, block_number, &hash_cached_1)
+            .exists());
+        assert!(cache
+            .tx_path(chain_id, block_number, &hash_cached_2)
+            .exists());
     }
 }
