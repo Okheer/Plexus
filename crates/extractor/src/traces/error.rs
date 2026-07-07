@@ -12,4 +12,7 @@ pub enum TraceError {
         #[source]
         source: CacheError,
     },
+
+    #[error("cache I/O error")]
+    Io(#[from] CacheError),
 }

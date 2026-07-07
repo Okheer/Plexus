@@ -1,5 +1,6 @@
 use crate::cache::{config::CacheConfig, io::read_json, CacheError};
 use crate::rpc::client::RpcClient;
+use crate::traces::error::TraceError;
 use alloy_primitives::B256;
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -99,4 +100,68 @@ async fn fetch_and_write_traces(
         }
     }
     (fetched, failed)
+}
+
+/// Fetches and caches prestate traces for every txn in a block
+///
+/// Reads the cached block_header.json to get list of txn hashes
+/// Already cached tx_{Hash},json files are skipped
+/// Missing file are concuurently fetched by 'debug_traceTransaction'
+pub async fn populate_trace(
+    client: Arc<RpcClient>,
+    cache: Arc<CacheConfig>,
+    chain_id: u64,
+    block_number: u64,
+)-> Result<TraceFetchSummary, TraceError>{
+    // read cache file and load the txn from header
+    let header_path = cache.block_header_path(chain_id, block_number);
+    let block_ctx = read_json::<BlockContext>(&header_path)
+        .map_err(|e| match e {
+            CacheError::NotFound(_) => TraceError::BlockHeaderNotCached {
+                chain_id,
+                block_number,
+            },
+            CacheError::Malformed { .. } => TraceError::BlockHeaderMalformed {
+                block_number,
+                source: e,
+            },
+            other => TraceError::Io(other),
+        })
+        .unwrap();
+
+    tracing::info!(
+        block_number,
+        tx_count = block_ctx.tx_hashes.len(),
+        "starting trace population"
+    );
+
+    // Segregate the fetched and missed file
+    let (cache_hits, to_fetch) =
+        partition_hashes(&cache, chain_id, block_number, block_ctx.tx_hashes);
+
+    tracing::info!(
+        hits = cache_hits.len(),
+        miss = to_fetch.len(),
+        "cache scan complete"
+    );
+
+    // fetch missing tx_hash
+    let (fetched, failed) =
+        fetch_and_write_traces(client, cache, chain_id, block_number, to_fetch).await;
+
+    let summary = TraceFetchSummary {
+        block_number,
+        cache_hits,
+        fetched,
+        failed,
+    };
+
+    tracing::info!(
+        block_number,
+        hits = summary.cache_hits.len(),
+        fetched = summary.fetched.len(),
+        failed = summary.failed.len(),
+        "trace population complete"
+    );
+    Ok(summary)
 }
