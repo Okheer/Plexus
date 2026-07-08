@@ -3,6 +3,7 @@ use crate::rpc::client::RpcClient;
 use crate::traces::error::TraceError;
 use alloy_primitives::B256;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use types::types::BlockContext;
 
@@ -21,6 +22,26 @@ impl TraceFetchSummary {
 
     pub fn is_complete(&self) -> bool {
         self.failed.is_empty()
+    }
+}
+
+#[derive(Debug)]
+pub struct TraceConfig {
+    pub max_concurrent_tasks: usize,
+}
+
+impl Default for TraceConfig {
+    fn default() -> Self {
+        TraceConfig {
+            max_concurrent_tasks: 50, //set to 50
+        }
+    }
+}
+
+impl TraceConfig {
+    pub fn with_max_concurrent_tasks(mut self, n: usize) -> Self {
+        self.max_concurrent_tasks = n;
+        self
     }
 }
 
@@ -54,19 +75,26 @@ async fn fetch_and_write_traces(
     chain_id: u64,
     block_number: u64,
     to_fetch: Vec<B256>,
+    max_concurrent_tasks: usize,
 ) -> (Vec<B256>, Vec<(B256, String)>) {
+    let task_limit = Arc::new(Semaphore::new(max_concurrent_tasks));
     let mut set: JoinSet<(B256, Result<(), String>)> = JoinSet::new();
+
+    let tracer_cfg = serde_json::json!({
+        "tracer": "prestateTracer",
+        "tracerConfig": {"diffMode": true}
+    });
 
     for hash in to_fetch {
         let client = client.clone();
         let cache = cache.clone();
 
+        let permit = task_limit.clone().acquire_owned().await.unwrap();
+        let tracer_cfg = tracer_cfg.clone();
+
         set.spawn(async move {
+            let _permit = permit;
             let hex_hash = format!("0x{}", hex::encode(hash));
-            let tracer_cfg = serde_json::json!({
-                "tracer": "prestateTracer",
-                "tracerConfig": {"diffMode": true}
-            });
 
             let trace_result: Result<serde_json::Value, _> = client
                 .request("debug_traceTransaction", (hex_hash, tracer_cfg))
@@ -88,14 +116,20 @@ async fn fetch_and_write_traces(
     let mut fetched = Vec::new();
     let mut failed = Vec::new();
     while let Some(result) = set.join_next().await {
-        match result.expect("trace task panicked") {
-            (hash, Ok(())) => {
+        match result {
+            Ok((hash, Ok(()))) => {
                 tracing::info!(?hash, "trace fetched and cached");
                 fetched.push(hash);
             }
-            (hash, Err(reason)) => {
+            Ok((hash, Err(reason))) => {
                 tracing::warn!(?hash, %reason, "trace fetch failed");
                 failed.push((hash, reason));
+            }
+            Err(join_err) => {
+                tracing::error!(
+                    %join_err,
+                    "a trace fetch task panicked or was cancelled"
+                );
             }
         }
     }
@@ -112,6 +146,7 @@ pub async fn populate_traces(
     cache: Arc<CacheConfig>,
     chain_id: u64,
     block_number: u64,
+    config: TraceConfig,
 ) -> Result<TraceFetchSummary, TraceError> {
     // read cache file and load the txn from header
     let header_path = cache.block_header_path(chain_id, block_number);
@@ -144,8 +179,15 @@ pub async fn populate_traces(
     );
 
     // fetch missing tx_hash
-    let (fetched, failed) =
-        fetch_and_write_traces(client, cache, chain_id, block_number, to_fetch).await;
+    let (fetched, failed) = fetch_and_write_traces(
+        client,
+        cache,
+        chain_id,
+        block_number,
+        to_fetch,
+        config.max_concurrent_tasks,
+    )
+    .await;
 
     let summary = TraceFetchSummary {
         block_number,
@@ -240,7 +282,14 @@ mod tests {
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         //Call populate_trace with a chain_id and block_number that has no block_header.json in that folder.
-        let result = populate_traces(client, cache, chain_id, block_number).await;
+        let result = populate_traces(
+            client,
+            cache,
+            chain_id,
+            block_number,
+            TraceConfig::default(),
+        )
+        .await;
         //Assert that the result is Err(TraceError::BlockHeaderNotCached { .. }).
         assert!(matches!(
             result,
@@ -270,7 +319,8 @@ mod tests {
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         let (_fetched, _failed) =
-            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
+            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch, 50)
+                .await;
 
         //checking if the cache are being writte on disc
         assert!(cache
@@ -301,9 +351,15 @@ mod tests {
         let hash_b = B256::from([0xBB; 32]);
         let hash_c = B256::from([0xCC; 32]);
 
-        let (fetched, failed) =
-            fetch_and_write_traces(client, cache.clone(), 1, 100, vec![hash_a, hash_b, hash_c])
-                .await;
+        let (fetched, failed) = fetch_and_write_traces(
+            client,
+            cache.clone(),
+            1,
+            100,
+            vec![hash_a, hash_b, hash_c],
+            50,
+        )
+        .await;
         // One failed, two succeeded — batch was NOT aborted
         assert_eq!(fetched.len(), 2);
         assert_eq!(failed.len(), 1);
