@@ -2,7 +2,6 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use types::types::ConflictType;
 
 /// A directed dependency graph over transactions in a single block.
-
 pub struct DepGraph {
     pub graph: DiGraph<usize, ConflictType>,
     pub tx_count: usize,
@@ -31,7 +30,7 @@ impl DepGraph {
         self.node_indices[tx_index]
     }
 
-    // Total number of dependency edges in the graph.
+    /// Total number of dependency edges in the graph.
     pub fn edge_count(&self) -> usize {
         self.graph.edge_count()
     }
