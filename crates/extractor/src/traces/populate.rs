@@ -402,11 +402,10 @@ mod tests {
         assert_eq!(summary.total(), 2);
         assert!(summary.is_complete());
     }
-    
-    #[tokio::test]
-    // checks if it Safely catches the OS-level IO error.
-    async fn fetch_succeeds_but_disk_write_fails() {
 
+    #[tokio::test]
+    // checks if it Safely catch the OS-level IO error.
+    async fn fetch_succeeds_but_disk_write_fails() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
