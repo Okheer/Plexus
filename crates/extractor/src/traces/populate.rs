@@ -402,4 +402,55 @@ mod tests {
         assert_eq!(summary.total(), 2);
         assert!(summary.is_complete());
     }
+    
+    #[tokio::test]
+    // checks if it Safely catches the OS-level IO error.
+    async fn fetch_succeeds_but_disk_write_fails() {
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "pre": {}, "post": {} }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let (temp_dir, chain_id, block_number) = setup_env();
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+        let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
+
+        let hash = B256::from([0x11; 32]);
+        let to_fetch = vec![hash];
+
+        // Create the block directory before we run the code
+        let block_dir = cache.block_dir(chain_id, block_number);
+        std::fs::create_dir_all(&block_dir).unwrap();
+
+        // Lock the directory down (make it Read-Only) so write_json is guaranteed to fail
+        let mut perms = std::fs::metadata(&block_dir).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&block_dir, perms).unwrap();
+
+        // Run the inner fetch-and-write function directly
+        let (fetched, failed) =
+            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
+
+        assert!(
+            fetched.is_empty(),
+            "nothing should be fetched and written successfully"
+        );
+        assert_eq!(
+            failed.len(),
+            1,
+            "the hash should be placed in the failed list"
+        );
+
+        // Prove exactly WHY it failed using the new TraceTaskError enum
+        let (failed_hash, error_reason) = &failed[0];
+        assert_eq!(failed_hash, &hash);
+        assert!(
+            matches!(error_reason, TraceTaskError::CacheWrite { .. }),
+            "Expected a disk write error!"
+        );
+    }
 }
