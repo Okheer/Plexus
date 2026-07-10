@@ -2,4 +2,4 @@ pub mod error;
 pub mod populate;
 
 pub use error::TraceError;
-pub use populate::{populate_traces, TraceConfig, TraceFetchSummary};
+pub use populate::{populate_traces, TraceFetchSummary};

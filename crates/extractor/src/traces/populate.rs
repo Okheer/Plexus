@@ -1,9 +1,8 @@
 use crate::cache::{config::CacheConfig, io::read_json, CacheError};
 use crate::rpc::client::RpcClient;
-use crate::traces::error::TraceError;
+use crate::traces::error::{TraceError, TraceTaskError};
 use alloy_primitives::B256;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use types::types::BlockContext;
 
@@ -12,7 +11,7 @@ pub struct TraceFetchSummary {
     pub block_number: u64,
     pub cache_hits: Vec<B256>,
     pub fetched: Vec<B256>,
-    pub failed: Vec<(B256, String)>,
+    pub failed: Vec<(B256, TraceTaskError)>,
 }
 
 impl TraceFetchSummary {
@@ -22,26 +21,6 @@ impl TraceFetchSummary {
 
     pub fn is_complete(&self) -> bool {
         self.failed.is_empty()
-    }
-}
-
-#[derive(Debug)]
-pub struct TraceConfig {
-    pub max_concurrent_tasks: usize,
-}
-
-impl Default for TraceConfig {
-    fn default() -> Self {
-        TraceConfig {
-            max_concurrent_tasks: 50, //set to 50
-        }
-    }
-}
-
-impl TraceConfig {
-    pub fn with_max_concurrent_tasks(mut self, n: usize) -> Self {
-        self.max_concurrent_tasks = n;
-        self
     }
 }
 
@@ -75,25 +54,21 @@ async fn fetch_and_write_traces(
     chain_id: u64,
     block_number: u64,
     to_fetch: Vec<B256>,
-    max_concurrent_tasks: usize,
-) -> (Vec<B256>, Vec<(B256, String)>) {
-    let task_limit = Arc::new(Semaphore::new(max_concurrent_tasks));
-    let mut set: JoinSet<(B256, Result<(), String>)> = JoinSet::new();
+) -> (Vec<B256>, Vec<(B256, TraceTaskError)>) {
+    let mut set: JoinSet<(B256, Result<(), TraceTaskError>)> = JoinSet::new();
 
-    let tracer_cfg = serde_json::json!({
+    let tracer_cfg = Arc::new(serde_json::json!({
         "tracer": "prestateTracer",
         "tracerConfig": {"diffMode": true}
-    });
+    }));
 
     for hash in to_fetch {
         let client = client.clone();
         let cache = cache.clone();
 
-        let permit = task_limit.clone().acquire_owned().await.unwrap();
         let tracer_cfg = tracer_cfg.clone();
 
         set.spawn(async move {
-            let _permit = permit;
             let hex_hash = format!("0x{}", hex::encode(hash));
 
             let trace_result: Result<serde_json::Value, _> = client
@@ -102,13 +77,13 @@ async fn fetch_and_write_traces(
 
             let trace = match trace_result {
                 Ok(t) => t,
-                Err(e) => return (hash, Err(format!("rpc: {e}"))),
+                Err(e) => return (hash, Err(TraceTaskError::from(e))),
             };
 
             let path = cache.tx_path(chain_id, block_number, &hash);
             match crate::cache::io::write_json(&path, &trace) {
                 Ok(()) => (hash, Ok(())),
-                Err(e) => (hash, Err(format!("write: {e}"))),
+                Err(e) => (hash, Err(TraceTaskError::from(e))),
             }
         });
     }
@@ -146,7 +121,6 @@ pub async fn populate_traces(
     cache: Arc<CacheConfig>,
     chain_id: u64,
     block_number: u64,
-    config: TraceConfig,
 ) -> Result<TraceFetchSummary, TraceError> {
     // read cache file and load the txn from header
     let header_path = cache.block_header_path(chain_id, block_number);
@@ -179,15 +153,8 @@ pub async fn populate_traces(
     );
 
     // fetch missing tx_hash
-    let (fetched, failed) = fetch_and_write_traces(
-        client,
-        cache,
-        chain_id,
-        block_number,
-        to_fetch,
-        config.max_concurrent_tasks,
-    )
-    .await;
+    let (fetched, failed) =
+        fetch_and_write_traces(client, cache, chain_id, block_number, to_fetch).await;
 
     let summary = TraceFetchSummary {
         block_number,
@@ -211,7 +178,7 @@ mod tests {
     use super::*;
     use crate::cache::config::CacheConfig;
     use alloy_primitives::B256;
-    use std::fs::{create_dir_all, File};
+    use std::fs::{create_dir_all, write, File};
     use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::{tempdir, TempDir};
     use wiremock::matchers::method;
@@ -282,14 +249,7 @@ mod tests {
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         //Call populate_trace with a chain_id and block_number that has no block_header.json in that folder.
-        let result = populate_traces(
-            client,
-            cache,
-            chain_id,
-            block_number,
-            TraceConfig::default(),
-        )
-        .await;
+        let result = populate_traces(client, cache, chain_id, block_number).await;
         //Assert that the result is Err(TraceError::BlockHeaderNotCached { .. }).
         assert!(matches!(
             result,
@@ -319,8 +279,7 @@ mod tests {
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
         let (_fetched, _failed) =
-            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch, 50)
-                .await;
+            fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
 
         //checking if the cache are being writte on disc
         assert!(cache
@@ -351,15 +310,9 @@ mod tests {
         let hash_b = B256::from([0xBB; 32]);
         let hash_c = B256::from([0xCC; 32]);
 
-        let (fetched, failed) = fetch_and_write_traces(
-            client,
-            cache.clone(),
-            1,
-            100,
-            vec![hash_a, hash_b, hash_c],
-            50,
-        )
-        .await;
+        let (fetched, failed) =
+            fetch_and_write_traces(client, cache.clone(), 1, 100, vec![hash_a, hash_b, hash_c])
+                .await;
         // One failed, two succeeded — batch was NOT aborted
         assert_eq!(fetched.len(), 2);
         assert_eq!(failed.len(), 1);
@@ -373,5 +326,80 @@ mod tests {
             "expected 2 files on disk, found {}",
             files_on_disk
         );
+    }
+    #[tokio::test]
+    async fn test_currupted_blockheader_returns_malformed_error() {
+        let (temp_dir, chain_id, block_number) = setup_env();
+
+        let client = Arc::new(RpcClient::new("http://localhost".to_string()).unwrap());
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+
+        create_dir_all(cache.block_dir(chain_id, block_number)).unwrap();
+
+        let block_path = cache.block_header_path(chain_id, block_number);
+
+        write(&block_path, b"Corrupted data").unwrap();
+
+        let result = populate_traces(client, cache, chain_id, block_number).await;
+
+        assert!(matches!(
+            result,
+            Err(TraceError::BlockHeaderMalformed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn all_traces_already_cached_skips_rpc_and_returns_summary() {
+        let (temp_dir, chain_id, block_number) = setup_env();
+
+        let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
+
+        let hash_1 = B256::from([0x11; 32]);
+        let hash_2 = B256::from([0x22; 32]);
+
+        // Create a valid block_header.json
+        let block_ctx = BlockContext {
+            number: block_number,
+            hash: B256::ZERO,
+            parent_hash: B256::ZERO,
+            coinbase: alloy_primitives::Address::ZERO,
+            chain_id,
+            timestamp: 1234567890,
+            base_fee_per_gas: None,
+            gas_limit: 30000000,
+            gas_used: 15000000,
+            tx_hashes: vec![hash_1, hash_2],
+        };
+        crate::cache::io::write_json(&cache.block_header_path(chain_id, block_number), &block_ctx)
+            .unwrap();
+
+        //  Create the two tx_{hash}.json files to pretend they are cached
+        crate::cache::io::write_json(
+            &cache.tx_path(chain_id, block_number, &hash_1),
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        crate::cache::io::write_json(
+            &cache.tx_path(chain_id, block_number, &hash_2),
+            &serde_json::json!({}),
+        )
+        .unwrap();
+
+        // Setup a dummy client (doesn't need a mock server because it shouldn't connect to anything)
+        let client = Arc::new(RpcClient::new("http://localhost".to_string()).unwrap());
+
+        let summary = populate_traces(client, cache, chain_id, block_number)
+            .await
+            .unwrap();
+
+        assert_eq!(summary.cache_hits.len(), 2);
+        assert!(summary.cache_hits.contains(&hash_1));
+        assert!(summary.cache_hits.contains(&hash_2));
+
+        assert!(summary.fetched.is_empty(), "fetched should be empty");
+        assert!(summary.failed.is_empty(), "failed should be empty");
+
+        assert_eq!(summary.total(), 2);
+        assert!(summary.is_complete());
     }
 }

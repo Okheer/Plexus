@@ -1,4 +1,5 @@
 use crate::cache::CacheError;
+use crate::rpc::RpcError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,4 +16,18 @@ pub enum TraceError {
 
     #[error("cache I/O error")]
     Io(#[from] CacheError),
+}
+
+#[derive(Error, Debug)]
+pub enum TraceTaskError {
+    #[error("rpc fetch failed")]
+    Rpc {
+        #[from] // Automatically converts RpcError into this variant!
+        source: RpcError,
+    },
+    #[error("cache write failed")]
+    CacheWrite {
+        #[from] // Automatically converts CacheError into this variant!
+        source: CacheError,
+    },
 }
