@@ -1,6 +1,6 @@
-use std::path::PathBuf;
+use crate::cache::{config::CacheConfig, error::CacheError, io::read_json};
 use alloy_primitives::B256;
-use crate::cache::{config::CacheConfig, io::read_json, error::CacheError};
+use std::path::PathBuf;
 use types::types::BlockContext;
 
 pub enum HeaderStatus {
@@ -25,7 +25,11 @@ impl CacheVerificationReport {
     }
 }
 
-pub fn verify_block_cache(cache: &CacheConfig, chain_id: u64, block_number: u64) -> CacheVerificationReport {
+pub fn verify_block_cache(
+    cache: &CacheConfig,
+    chain_id: u64,
+    block_number: u64,
+) -> CacheVerificationReport {
     let header_path = cache.block_header_path(chain_id, block_number);
 
     let mut verified = Vec::new();
@@ -35,7 +39,7 @@ pub fn verify_block_cache(cache: &CacheConfig, chain_id: u64, block_number: u64)
     let block_ctx = match read_json::<BlockContext>(&header_path) {
         Ok(ctx) => ctx,
         Err(CacheError::NotFound(p)) => {
-            return CacheVerificationReport { 
+            return CacheVerificationReport {
                 chain_id: chain_id,
                 block_number: block_number,
                 header: HeaderStatus::Missing(p),
@@ -48,11 +52,13 @@ pub fn verify_block_cache(cache: &CacheConfig, chain_id: u64, block_number: u64)
             return CacheVerificationReport {
                 chain_id: chain_id,
                 block_number: block_number,
-                header: HeaderStatus::Malformed { path, reason: source.to_string() },
+                header: HeaderStatus::Malformed {
+                    path,
+                    reason: source.to_string(),
+                },
                 verified_tx_files: verified,
                 missing_tx_files: missing,
                 corrupted_tx_files: corrupted,
-                
             };
         }
         Err(CacheError::Io { path, source }) => {
@@ -60,7 +66,10 @@ pub fn verify_block_cache(cache: &CacheConfig, chain_id: u64, block_number: u64)
             return CacheVerificationReport {
                 chain_id: chain_id,
                 block_number: block_number,
-                header: HeaderStatus::Malformed { path, reason: source.to_string() },
+                header: HeaderStatus::Malformed {
+                    path,
+                    reason: source.to_string(),
+                },
                 verified_tx_files: verified,
                 missing_tx_files: missing,
                 corrupted_tx_files: corrupted,
@@ -73,12 +82,21 @@ pub fn verify_block_cache(cache: &CacheConfig, chain_id: u64, block_number: u64)
         match read_json::<serde_json::Value>(&path) {
             Ok(_) => verified.push(*hash),
             Err(CacheError::NotFound(_)) => missing.push(*hash),
-            Err(CacheError::Malformed { path, source }) => corrupted.push((*hash, path, source.to_string())),
-            Err(CacheError::Io { path, source }) => corrupted.push((*hash, path, source.to_string())),
+            Err(CacheError::Malformed { path, source }) => {
+                corrupted.push((*hash, path, source.to_string()))
+            }
+            Err(CacheError::Io { path, source }) => {
+                corrupted.push((*hash, path, source.to_string()))
+            }
         }
     }
 
-    CacheVerificationReport { chain_id, block_number, header: HeaderStatus::Ok, verified_tx_files: verified, missing_tx_files: missing, corrupted_tx_files: corrupted }
+    CacheVerificationReport {
+        chain_id,
+        block_number,
+        header: HeaderStatus::Ok,
+        verified_tx_files: verified,
+        missing_tx_files: missing,
+        corrupted_tx_files: corrupted,
+    }
 }
-
-
