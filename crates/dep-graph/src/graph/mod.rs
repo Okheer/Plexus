@@ -1,6 +1,13 @@
 use petgraph::graph::{DiGraph, NodeIndex};
+use thiserror::Error;
 use types::types::ConflictType;
 
+/// Errors that can occur when operating on a [`DepGraph`].
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DepGraphError {
+    #[error("transaction index {tx_index} is out of bounds (tx_count = {tx_count})")]
+    TxIndexOutOfBounds { tx_index: usize, tx_count: usize },
+}
 /// A directed dependency graph over transactions in a single block.
 pub struct DepGraph {
     pub graph: DiGraph<usize, ConflictType>,
@@ -23,11 +30,17 @@ impl DepGraph {
     }
     /// Return the `NodeIndex` for a given transaction position.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `tx_index >= self.tx_count`.
-    pub fn node_for_tx(&self, tx_index: usize) -> NodeIndex {
-        self.node_indices[tx_index]
+    /// Returns [`DepGraphError::TxIndexOutOfBounds`] if `tx_index >= self.tx_count`.
+    pub fn node_for_tx(&self, tx_index: usize) -> Result<NodeIndex, DepGraphError> {
+        self.node_indices
+            .get(tx_index)
+            .copied()
+            .ok_or(DepGraphError::TxIndexOutOfBounds {
+                tx_index,
+                tx_count: self.tx_count,
+            })
     }
 
     /// Total number of dependency edges in the graph.
@@ -38,12 +51,13 @@ impl DepGraph {
     /// dependency edges, meaning it can execute independently of every other
     /// transaction in the block.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `tx_index >= self.tx_count`.
-    pub fn is_independent(&self, tx_index: usize) -> bool {
-        let node = self.node_for_tx(tx_index);
-        self.graph
+    /// Returns [`DepGraphError::TxIndexOutOfBounds`] if `tx_index >= self.tx_count`.
+    pub fn is_independent(&self, tx_index: usize) -> Result<bool, DepGraphError> {
+        let node = self.node_for_tx(tx_index)?;
+        let independent = self
+            .graph
             .neighbors_directed(node, petgraph::Direction::Incoming)
             .next()
             .is_none()
@@ -51,7 +65,8 @@ impl DepGraph {
                 .graph
                 .neighbors_directed(node, petgraph::Direction::Outgoing)
                 .next()
-                .is_none()
+                .is_none();
+        Ok(independent)
     }
 }
 
@@ -71,7 +86,7 @@ mod tests {
     fn nodes_carry_tx_index_as_weight() {
         let g = DepGraph::new(5, 1);
         for i in 0..5 {
-            let node = g.node_for_tx(i);
+            let node = g.node_for_tx(i).unwrap();
             assert_eq!(g.graph[node], i);
         }
     }
@@ -79,19 +94,38 @@ mod tests {
     #[test]
     fn node_with_no_edges_is_independent() {
         let g = DepGraph::new(3, 1);
-        assert!(g.is_independent(0));
-        assert!(g.is_independent(1));
-        assert!(g.is_independent(2));
+        assert!(g.is_independent(0).unwrap());
+        assert!(g.is_independent(1).unwrap());
+        assert!(g.is_independent(2).unwrap());
     }
 
     #[test]
     fn node_with_edges_is_not_independent() {
         let mut g = DepGraph::new(3, 1);
-        let a = g.node_for_tx(0);
-        let b = g.node_for_tx(1);
+        let a = g.node_for_tx(0).unwrap();
+        let b = g.node_for_tx(1).unwrap();
         g.graph.add_edge(a, b, ConflictType::WriteAfterWrite);
-        assert!(!g.is_independent(0));
-        assert!(!g.is_independent(1));
-        assert!(g.is_independent(2));
+        assert!(!g.is_independent(0).unwrap());
+        assert!(!g.is_independent(1).unwrap());
+        assert!(g.is_independent(2).unwrap());
+    }
+
+    #[test]
+    fn out_of_bounds_tx_index_returns_error() {
+        let g = DepGraph::new(3, 1);
+        assert_eq!(
+            g.node_for_tx(3).unwrap_err(),
+            DepGraphError::TxIndexOutOfBounds {
+                tx_index: 3,
+                tx_count: 3
+            }
+        );
+        assert_eq!(
+            g.is_independent(10).unwrap_err(),
+            DepGraphError::TxIndexOutOfBounds {
+                tx_index: 10,
+                tx_count: 3
+            }
+        );
     }
 }

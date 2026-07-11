@@ -1555,6 +1555,7 @@ name = "dep-graph"
 version = "0.1.0"
 dependencies = [
  "petgraph",
+ "thiserror 1.0.69",
  "types",
 ]
 
