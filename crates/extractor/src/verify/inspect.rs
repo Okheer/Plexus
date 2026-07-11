@@ -5,11 +5,15 @@ use types::types::BlockContext;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderStatus {
+    /// Header exists and parses into a [`BlockContext`].
     Ok,
+    /// No header file on disk at the expected path.
     Missing(PathBuf),
+    /// Header exists but could not be read or parsed (invalid JSON, wrong
     Malformed { path: PathBuf, reason: String },
 }
 
+/// Every field is a plain record of what was found — the audit never fails, it only reports.
 #[derive(Debug, Clone)]
 pub struct CacheVerificationReport {
     pub chain_id: u64,
@@ -21,6 +25,7 @@ pub struct CacheVerificationReport {
 }
 
 impl CacheVerificationReport {
+    /// `true` only when the header is present and valid and every declared
     pub fn is_complete(&self) -> bool {
         matches!(self.header, HeaderStatus::Ok)
             && self.missing_tx_files.is_empty()
@@ -28,6 +33,24 @@ impl CacheVerificationReport {
     }
 }
 
+/// Checks that a decoded trace file has the expected top-level shape produced
+/// by `prestateTracer` in diff mode: both `pre` and `post` present and non-null. 
+fn validate_trace_shape(value: &serde_json::Value) -> Result<(), String> {
+    for key in ["pre", "post"] {
+        match value.get(key) {
+            None => return Err(format!("missing required top-level key '{key}'")),
+            Some(serde_json::Value::Null) => return Err(format!("top-level key '{key}' is null")),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Offline audit of a block's cache directory.
+/// Performs no RPC or network I/O — it only reads what is already on disk.
+/// Reads `block_header.json`, then checks that every transaction it declares
+/// has a present, non-empty, well-formed `tx_{hash}.json` trace file, and
+/// returns a [`CacheVerificationReport`] describing the result.
 pub fn verify_block_cache(
     cache: &CacheConfig,
     chain_id: u64,
@@ -83,7 +106,10 @@ pub fn verify_block_cache(
     for hash in &block_ctx.tx_hashes {
         let path = cache.tx_path(chain_id, block_number, hash);
         match read_json::<serde_json::Value>(&path) {
-            Ok(_) => verified.push(*hash),
+            Ok(value) => match validate_trace_shape(&value) {
+                Ok(()) => verified.push(*hash),
+                Err(reason) => corrupted.push((*hash, path, reason)),
+            },
             Err(CacheError::NotFound(_)) => missing.push(*hash),
             Err(CacheError::Malformed { path, source }) => {
                 corrupted.push((*hash, path, source.to_string()))
@@ -241,6 +267,47 @@ mod tests {
         assert!(report.missing_tx_files.is_empty());
         assert_eq!(report.corrupted_tx_files.len(), 1);
         assert_eq!(report.corrupted_tx_files[0].0, hash);
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn tx_file_missing_post_key_is_corrupted() {
+        let (_dir, cache) = setup();
+        let hash = B256::from([0x11; 32]);
+        write_header(&cache, vec![hash]);
+        // Valid JSON, but not a diff-mode prestate trace: `post` is absent.
+        write_json(
+            &cache.tx_path(CHAIN_ID, BLOCK_NUMBER, &hash),
+            &serde_json::json!({ "pre": {} }),
+        )
+        .unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(report.verified_tx_files.is_empty());
+        assert_eq!(report.corrupted_tx_files.len(), 1);
+        assert_eq!(report.corrupted_tx_files[0].0, hash);
+        assert!(report.corrupted_tx_files[0].2.contains("post"));
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn tx_file_with_null_pre_is_corrupted() {
+        let (_dir, cache) = setup();
+        let hash = B256::from([0x11; 32]);
+        write_header(&cache, vec![hash]);
+        // Both keys present, but `pre` is explicitly null.
+        write_json(
+            &cache.tx_path(CHAIN_ID, BLOCK_NUMBER, &hash),
+            &serde_json::json!({ "pre": null, "post": {} }),
+        )
+        .unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(report.verified_tx_files.is_empty());
+        assert_eq!(report.corrupted_tx_files.len(), 1);
+        assert!(report.corrupted_tx_files[0].2.contains("pre"));
         assert!(!report.is_complete());
     }
 
