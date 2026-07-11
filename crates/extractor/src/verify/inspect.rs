@@ -40,8 +40,8 @@ pub fn verify_block_cache(
         Ok(ctx) => ctx,
         Err(CacheError::NotFound(p)) => {
             return CacheVerificationReport {
-                chain_id: chain_id,
-                block_number: block_number,
+                chain_id,
+                block_number,
                 header: HeaderStatus::Missing(p),
                 verified_tx_files: verified,
                 missing_tx_files: missing,
@@ -50,8 +50,8 @@ pub fn verify_block_cache(
         }
         Err(CacheError::Malformed { path, source }) => {
             return CacheVerificationReport {
-                chain_id: chain_id,
-                block_number: block_number,
+                chain_id,
+                block_number,
                 header: HeaderStatus::Malformed {
                     path,
                     reason: source.to_string(),
@@ -64,8 +64,8 @@ pub fn verify_block_cache(
         Err(CacheError::Io { path, source }) => {
             // treat as Malformed/unreadable too — surface the OS error, don't panic
             return CacheVerificationReport {
-                chain_id: chain_id,
-                block_number: block_number,
+                chain_id,
+                block_number,
                 header: HeaderStatus::Malformed {
                     path,
                     reason: source.to_string(),
