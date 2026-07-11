@@ -3,11 +3,14 @@ use alloy_primitives::B256;
 use std::path::PathBuf;
 use types::types::BlockContext;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderStatus {
     Ok,
     Missing(PathBuf),
     Malformed { path: PathBuf, reason: String },
 }
+
+#[derive(Debug, Clone)]
 pub struct CacheVerificationReport {
     pub chain_id: u64,
     pub block_number: u64,
@@ -98,5 +101,182 @@ pub fn verify_block_cache(
         verified_tx_files: verified,
         missing_tx_files: missing,
         corrupted_tx_files: corrupted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::io::write_json;
+    use alloy_primitives::Address;
+    use std::fs::{create_dir_all, write, File};
+    use tempfile::{tempdir, TempDir};
+    use types::types::BlockContext;
+
+    const CHAIN_ID: u64 = 1;
+    const BLOCK_NUMBER: u64 = 100;
+
+    fn setup() -> (TempDir, CacheConfig) {
+        let dir = tempdir().unwrap();
+        let cache = CacheConfig::with_root(dir.path().to_path_buf());
+        (dir, cache)
+    }
+
+    /// Writes a valid `block_header.json` declaring the given transaction hashes.
+    fn write_header(cache: &CacheConfig, tx_hashes: Vec<B256>) {
+        let ctx = BlockContext {
+            number: BLOCK_NUMBER,
+            hash: B256::ZERO,
+            parent_hash: B256::ZERO,
+            coinbase: Address::ZERO,
+            chain_id: CHAIN_ID,
+            timestamp: 1234567890,
+            base_fee_per_gas: None,
+            gas_limit: 30_000_000,
+            gas_used: 15_000_000,
+            tx_hashes,
+        };
+        write_json(&cache.block_header_path(CHAIN_ID, BLOCK_NUMBER), &ctx).unwrap();
+    }
+
+    /// Writes a valid (non-empty JSON) trace file for a hash.
+    fn write_valid_tx(cache: &CacheConfig, hash: &B256) {
+        write_json(
+            &cache.tx_path(CHAIN_ID, BLOCK_NUMBER, hash),
+            &serde_json::json!({ "pre": {}, "post": {} }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn complete_cache_reports_is_complete() {
+        let (_dir, cache) = setup();
+        let h1 = B256::from([0x11; 32]);
+        let h2 = B256::from([0x22; 32]);
+        write_header(&cache, vec![h1, h2]);
+        write_valid_tx(&cache, &h1);
+        write_valid_tx(&cache, &h2);
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert_eq!(report.header, HeaderStatus::Ok);
+        assert_eq!(report.verified_tx_files.len(), 2);
+        assert!(report.missing_tx_files.is_empty());
+        assert!(report.corrupted_tx_files.is_empty());
+        assert!(report.is_complete());
+    }
+
+    #[test]
+    fn missing_header_reports_missing_status() {
+        let (_dir, cache) = setup();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(matches!(report.header, HeaderStatus::Missing(_)));
+        assert!(report.verified_tx_files.is_empty());
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn malformed_header_reports_malformed_status() {
+        let (_dir, cache) = setup();
+        let path = cache.block_header_path(CHAIN_ID, BLOCK_NUMBER);
+        create_dir_all(path.parent().unwrap()).unwrap();
+        write(&path, b"this is not json").unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(matches!(report.header, HeaderStatus::Malformed { .. }));
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn missing_tx_file_is_reported() {
+        let (_dir, cache) = setup();
+        let present = B256::from([0x11; 32]);
+        let absent = B256::from([0x22; 32]);
+        write_header(&cache, vec![present, absent]);
+        write_valid_tx(&cache, &present);
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert_eq!(report.verified_tx_files, vec![present]);
+        assert_eq!(report.missing_tx_files, vec![absent]);
+        assert!(report.corrupted_tx_files.is_empty());
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn corrupted_tx_file_is_reported() {
+        let (_dir, cache) = setup();
+        let hash = B256::from([0x11; 32]);
+        write_header(&cache, vec![hash]);
+        // Invalid JSON on disk at the expected tx path.
+        let tx_path = cache.tx_path(CHAIN_ID, BLOCK_NUMBER, &hash);
+        create_dir_all(tx_path.parent().unwrap()).unwrap();
+        write(&tx_path, b"{ broken json").unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(report.verified_tx_files.is_empty());
+        assert!(report.missing_tx_files.is_empty());
+        assert_eq!(report.corrupted_tx_files.len(), 1);
+        assert_eq!(report.corrupted_tx_files[0].0, hash);
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn empty_tx_file_is_reported_as_corrupted() {
+        let (_dir, cache) = setup();
+        let hash = B256::from([0x11; 32]);
+        write_header(&cache, vec![hash]);
+        // A zero-byte file is not valid JSON, so it must land in `corrupted`,
+        // not `missing` — the file exists, it's just unparseable.
+        let tx_path = cache.tx_path(CHAIN_ID, BLOCK_NUMBER, &hash);
+        create_dir_all(tx_path.parent().unwrap()).unwrap();
+        File::create(&tx_path).unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert!(report.missing_tx_files.is_empty());
+        assert_eq!(report.corrupted_tx_files.len(), 1);
+        assert_eq!(report.corrupted_tx_files[0].0, hash);
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn mixed_report_counts_are_correct() {
+        let (_dir, cache) = setup();
+        let ok = B256::from([0x11; 32]);
+        let gone = B256::from([0x22; 32]);
+        let bad = B256::from([0x33; 32]);
+        write_header(&cache, vec![ok, gone, bad]);
+
+        write_valid_tx(&cache, &ok);
+        // `gone` is left absent.
+        let bad_path = cache.tx_path(CHAIN_ID, BLOCK_NUMBER, &bad);
+        write(&bad_path, b"not json").unwrap();
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert_eq!(report.verified_tx_files, vec![ok]);
+        assert_eq!(report.missing_tx_files, vec![gone]);
+        assert_eq!(report.corrupted_tx_files.len(), 1);
+        assert_eq!(report.corrupted_tx_files[0].0, bad);
+        assert!(!report.is_complete());
+    }
+
+    #[test]
+    fn empty_block_is_trivially_complete() {
+        let (_dir, cache) = setup();
+        write_header(&cache, vec![]);
+
+        let report = verify_block_cache(&cache, CHAIN_ID, BLOCK_NUMBER);
+
+        assert_eq!(report.header, HeaderStatus::Ok);
+        assert!(report.verified_tx_files.is_empty());
+        assert!(report.missing_tx_files.is_empty());
+        assert!(report.corrupted_tx_files.is_empty());
+        assert!(report.is_complete());
     }
 }
