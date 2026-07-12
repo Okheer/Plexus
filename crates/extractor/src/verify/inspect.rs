@@ -34,7 +34,7 @@ impl CacheVerificationReport {
 }
 
 /// Checks that a decoded trace file has the expected top-level shape produced
-/// by `prestateTracer` in diff mode: both `pre` and `post` present and non-null. 
+/// by `prestateTracer` in diff mode: both `pre` and `post` present and non-null.
 fn validate_trace_shape(value: &serde_json::Value) -> Result<(), String> {
     for key in ["pre", "post"] {
         match value.get(key) {
