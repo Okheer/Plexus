@@ -1,9 +1,13 @@
+pub mod builder;
 pub mod errors;
+
+pub use builder::build_graph;
+
 use self::errors::DepGraphError;
 use petgraph::graph::{DiGraph, NodeIndex};
 use types::types::ConflictType;
 
-/// A directed dependency graph over transactions in a single block.
+#[derive(Debug)]
 pub struct DepGraph {
     pub graph: DiGraph<usize, ConflictType>,
     pub tx_count: usize,
