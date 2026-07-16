@@ -77,7 +77,7 @@ impl AccessSet {
 // ─── Conflict Type ───────────────────────────────────────────────────────────
 
 /// The dependency relationship between two transactions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ConflictType {
     /// Both transactions write the same state key.
     /// The later write must observe the correct post-execution order.

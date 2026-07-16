@@ -1554,6 +1554,7 @@ checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 name = "dep-graph"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives",
  "petgraph",
  "thiserror 1.0.69",
  "types",
