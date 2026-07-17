@@ -67,9 +67,7 @@ mod tests {
         }
     }
 
-    // geth and erigon are known clients that simply can't serve a BAL yet, so
-    // they must surface as unsupported rather than parse into something we'd
-    // then fail on at fetch time
+    // geth and erigon are known clients that simply can't serve a BAL yet
     #[test]
     fn blocked_and_unknown_clients_are_unsupported() {
         for name in ["geth", "erigon", "besu", "nonsense"] {
