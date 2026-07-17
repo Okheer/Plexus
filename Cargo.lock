@@ -2946,6 +2946,7 @@ name = "parser"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "alloy-eip7928",
  "alloy-primitives",
  "dirs",
  "hex",
