@@ -14,6 +14,7 @@ serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 alloy = { workspace = true, features = ["json-rpc"] }
+alloy-eip7928 = { version = "0.3", features = ["rlp", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tracing = "0.1"
 rand = "0.8"

@@ -16,7 +16,7 @@ pub enum BlockId {
 }
 
 impl BlockId {
-    fn as_rpc_param(&self) -> String {
+    pub(crate) fn as_rpc_param(&self) -> String {
         match self {
             BlockId::Number(n) => format!("0x{:x}", n),
             BlockId::Tag(t) => t.clone(),
