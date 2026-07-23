@@ -2,8 +2,9 @@
 //! task-group (weakly connected component) statistics.
 
 use crate::graph::DepGraph;
+use petgraph::algo::connected_components;
+use std::collections::VecDeque;
 
-/// Aggregate, block-level statistics derived from a [`DepGraph`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlockMetrics {
     pub tx_count: usize,
@@ -14,7 +15,6 @@ pub struct BlockMetrics {
     pub singleton_group_count: usize,
 }
 
-/// Fraction of transactions with no dependency edges at all.
 pub fn independence_coefficient(graph: &DepGraph) -> f64 {
     if graph.tx_count == 0 {
         return 1.0;
@@ -25,10 +25,11 @@ pub fn independence_coefficient(graph: &DepGraph) -> f64 {
     independent as f64 / graph.tx_count as f64
 }
 
-/// Compute the full set of [`BlockMetrics`] in a single pass.
+/// Compute the full set of [`BlockMetrics`] for a dependency graph.
 pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
     let tx_count = graph.tx_count;
 
+    // Degree-zero transactions: no incoming and no outgoing edges.
     let independent_tx_count = (0..tx_count)
         .filter(|&tx| graph.is_independent(tx).unwrap_or(false))
         .count();
@@ -39,21 +40,12 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
         independent_tx_count as f64 / tx_count as f64
     };
 
-    let node_count = graph.graph.node_count();
-    let mut dsu = DisjointSet::new(node_count);
-    for edge in graph.graph.edge_indices() {
-        if let Some((source, target)) = graph.graph.edge_endpoints(edge) {
-            dsu.union(source.index(), target.index());
-        }
-    }
+    // Weakly connected component count. `connected_components` walks the graph
+    // as if every edge were undirected, which is exactly the WCC definition.
+    let task_group_count = connected_components(&graph.graph);
 
-    let mut group_sizes = vec![0usize; node_count];
-    for node in 0..node_count {
-        let root = dsu.find(node);
-        group_sizes[root] += 1;
-    }
-
-    let task_group_count = group_sizes.iter().filter(|&&size| size > 0).count();
+    // Component sizes via BFS over the undirected view of the graph.
+    let group_sizes = weakly_connected_component_sizes(graph);
     let largest_group_size = group_sizes.iter().copied().max().unwrap_or(0);
     let singleton_group_count = group_sizes.iter().filter(|&&size| size == 1).count();
 
@@ -67,47 +59,45 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
     }
 }
 
-/// Minimal union–find with path compression and union by size.
-struct DisjointSet {
-    parent: Vec<usize>,
-    size: Vec<usize>,
-}
+/// Collect the size of every weakly connected component using a breadth-first
+/// search over the undirected view of the graph.
+///
+/// petgraph's [`connected_components`] returns only the number of components,
+/// so this BFS recovers component membership. Each unvisited node seeds a new
+/// component, and [`neighbors_undirected`] expands it by following edges
+/// regardless of direction — i.e. the undirected view of the dependency graph.
+///
+/// [`neighbors_undirected`]: petgraph::graph::Graph::neighbors_undirected
+fn weakly_connected_component_sizes(graph: &DepGraph) -> Vec<usize> {
+    let g = &graph.graph;
+    let mut visited = vec![false; g.node_count()];
+    let mut sizes = Vec::new();
+    let mut queue: VecDeque<_> = VecDeque::new();
 
-impl DisjointSet {
-    fn new(n: usize) -> Self {
-        Self {
-            parent: (0..n).collect(),
-            size: vec![1; n],
+    for start in g.node_indices() {
+        if visited[start.index()] {
+            continue;
         }
+
+        // Seed a fresh component and BFS outward over undirected edges.
+        visited[start.index()] = true;
+        queue.push_back(start);
+        let mut size = 0usize;
+
+        while let Some(node) = queue.pop_front() {
+            size += 1;
+            for neighbor in g.neighbors_undirected(node) {
+                if !visited[neighbor.index()] {
+                    visited[neighbor.index()] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        sizes.push(size);
     }
 
-    fn find(&mut self, x: usize) -> usize {
-        let mut root = x;
-        while self.parent[root] != root {
-            root = self.parent[root];
-        }
-        let mut node = x;
-        while self.parent[node] != root {
-            let next = self.parent[node];
-            self.parent[node] = root;
-            node = next;
-        }
-        root
-    }
-
-    fn union(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra == rb {
-            return;
-        }
-        let (big, small) = if self.size[ra] >= self.size[rb] {
-            (ra, rb)
-        } else {
-            (rb, ra)
-        };
-        self.parent[small] = big;
-        self.size[big] += self.size[small];
-    }
+    sizes
 }
 
 #[cfg(test)]
@@ -115,6 +105,7 @@ mod tests {
     use super::*;
     use types::types::ConflictType;
 
+    /// Add a directed conflict edge between two transaction positions.
     fn add_edge(g: &mut DepGraph, from: usize, to: usize) {
         let a = g.node_for_tx(from).unwrap();
         let b = g.node_for_tx(to).unwrap();
@@ -125,6 +116,12 @@ mod tests {
     fn empty_graph_is_fully_independent() {
         let g = DepGraph::new(0, 1);
         assert_eq!(independence_coefficient(&g), 1.0);
+        let m = compute_metrics(&g);
+        assert_eq!(m.tx_count, 0);
+        assert_eq!(m.parallelization_coefficient, 1.0);
+        assert_eq!(m.task_group_count, 0);
+        assert_eq!(m.largest_group_size, 0);
+        assert_eq!(m.singleton_group_count, 0);
     }
 
     #[test]
@@ -155,6 +152,7 @@ mod tests {
     #[test]
     fn chain_of_five_plus_five_independent() {
         let mut g = DepGraph::new(10, 1);
+        // Dependency chain 0 -> 1 -> 2 -> 3 -> 4; txs 5..=9 stay independent.
         for i in 0..4 {
             add_edge(&mut g, i, i + 1);
         }
@@ -193,7 +191,7 @@ mod tests {
         };
 
         for _ in 0..100 {
-            let tx_count = (next() % 20 + 1) as usize;
+            let tx_count = (next() % 20 + 1) as usize; // 1..=20
             let mut g = DepGraph::new(tx_count, 1);
 
             let edge_attempts = next() % (tx_count as u64 * 2 + 1);
@@ -207,21 +205,30 @@ mod tests {
 
             let m = compute_metrics(&g);
 
-            assert!((0.0..=1.0).contains(&m.parallelization_coefficient));
-            assert!(m.task_group_count >= 1 && m.task_group_count <= tx_count);
-            assert!(m.largest_group_size >= 1 && m.largest_group_size <= tx_count);
+            assert!(
+                (0.0..=1.0).contains(&m.parallelization_coefficient),
+                "coefficient out of range: {}",
+                m.parallelization_coefficient
+            );
+            assert!(
+                m.task_group_count >= 1 && m.task_group_count <= tx_count,
+                "task_group_count {} outside [1, {}]",
+                m.task_group_count,
+                tx_count
+            );
+            assert!(
+                m.largest_group_size >= 1 && m.largest_group_size <= tx_count,
+                "largest_group_size {} outside [1, {}]",
+                m.largest_group_size,
+                tx_count
+            );
             assert!(m.independent_tx_count <= tx_count);
+            // The BFS component count must agree with `connected_components`.
+            assert_eq!(
+                m.task_group_count,
+                weakly_connected_component_sizes(&g).len(),
+                "connected_components disagreed with BFS component count"
+            );
         }
-    }
-    #[test]
-    fn empty_graph_compute_metrics() {
-        let g = DepGraph::new(0, 1);
-        let m = compute_metrics(&g);
-        assert_eq!(m.tx_count, 0);
-        assert_eq!(m.independent_tx_count, 0);
-        assert_eq!(m.parallelization_coefficient, 1.0);
-        assert_eq!(m.task_group_count, 0);
-        assert_eq!(m.largest_group_size, 0);
-        assert_eq!(m.singleton_group_count, 0);
     }
 }
