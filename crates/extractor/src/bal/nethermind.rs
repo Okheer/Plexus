@@ -1,3 +1,11 @@
+//! Block access list fetching for Nethermind nodes.
+//!
+//! Nethermind exposes EIP-7928 data only through `debug_getRawBlockAccessList`,
+//! which returns the raw RLP as a hex string rather than JSON. Decoding it with
+//! `alloy_eip7928` lands on the same `Vec<AccountChanges>` the Reth path
+//! produces, so everything downstream ([`normalize_bal`](crate::bal::normalize_bal)
+//! and the index classification) is shared between the two clients.
+
 use alloy_eip7928::bal::DecodedBal;
 use alloy_eip7928::AccountChanges;
 use alloy_primitives::Bytes;
@@ -6,6 +14,11 @@ use crate::bal::error::BalError;
 use crate::fetcher::BlockId;
 use crate::rpc::client::RpcClient;
 
+/// Fetches a block's access list from a Nethermind node.
+///
+/// Nethermind serves the BAL as raw RLP hex from `debug_getRawBlockAccessList`;
+/// this fetches those bytes and decodes them into the client-agnostic
+/// `alloy_eip7928` types. A `null` result means the node has no such block.
 pub async fn fetch_nethermind_bal(
     client: &RpcClient,
     block_id: &BlockId,
@@ -19,6 +32,11 @@ pub async fn fetch_nethermind_bal(
     decode_raw_bal(&raw)
 }
 
+/// Decodes a `0x`-prefixed raw RLP block access list into its account changes.
+///
+/// Split out from the fetch so the RLP decoding can be tested without a node and
+/// reused wherever raw BAL bytes need decoding (for example, verifying the
+/// `blockAccessListHash` commitment). The `0x` prefix is optional.
 pub fn decode_raw_bal(raw_hex: &str) -> Result<Vec<AccountChanges>, BalError> {
     let stripped = raw_hex.strip_prefix("0x").unwrap_or(raw_hex);
     let bytes = hex::decode(stripped)?;
