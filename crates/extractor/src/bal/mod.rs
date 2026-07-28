@@ -231,7 +231,7 @@ mod agreement_tests {
     fn reth_and_nethermind_decode_the_same_underlying_data() {
         let via_reth: Vec<AccountChanges> = serde_json::from_value(sample()).unwrap();
 
-        let rlp = alloy_rlp::encode(&Bal::from(via_reth.clone()));
+        let rlp = alloy_rlp::encode(Bal::from(via_reth.clone()));
         let raw_hex = format!("0x{}", hex::encode(rlp));
         let via_nethermind = decode_raw_bal(&raw_hex).unwrap();
 
