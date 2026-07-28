@@ -6,12 +6,14 @@
 pub mod client_kind;
 pub mod error;
 pub mod index;
+pub mod nethermind;
 pub mod normalize;
 pub mod reth;
 
 pub use client_kind::ClientKind;
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
+pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
 pub use reth::fetch_reth_bal;
 
@@ -185,5 +187,54 @@ mod e2e_tests {
             assert!(tx.exact_reads().is_none());
             assert!(tx.reads.keys().contains(&read_slot));
         }
+    }
+}
+
+// Reth (JSON) and Nethermind (raw RLP) are two encodings of the same BAL. Both
+// fetch paths decode into `Vec<AccountChanges>`, so proving they yield identical
+// values proves the shared `normalize_bal` produces identical `AccessSet`s.
+#[cfg(test)]
+mod agreement_tests {
+    use alloy_eip7928::{bal::Bal, AccountChanges};
+
+    use super::nethermind::decode_raw_bal;
+
+    fn sample() -> serde_json::Value {
+        serde_json::json!([
+            {
+                "address": "0x000f3df6d732807ef1319fb7b8bb8522d0beac02",
+                "storageChanges": [
+                    { "slot": "0x2a", "changes": [ { "blockAccessIndex": "0x0", "newValue": "0x99" } ] }
+                ],
+                "storageReads": [],
+                "balanceChanges": [],
+                "nonceChanges": [],
+                "codeChanges": []
+            },
+            {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "storageChanges": [
+                    { "slot": "0x1", "changes": [
+                        { "blockAccessIndex": "0x1", "newValue": "0x64" },
+                        { "blockAccessIndex": "0x2", "newValue": "0xc8" }
+                    ] }
+                ],
+                "storageReads": ["0x5"],
+                "balanceChanges": [ { "blockAccessIndex": "0x1", "postBalance": "0xde0b6b3a7640000" } ],
+                "nonceChanges": [ { "blockAccessIndex": "0x1", "newNonce": "0x1" } ],
+                "codeChanges": []
+            }
+        ])
+    }
+
+    #[test]
+    fn reth_and_nethermind_decode_the_same_underlying_data() {
+        let via_reth: Vec<AccountChanges> = serde_json::from_value(sample()).unwrap();
+
+        let rlp = alloy_rlp::encode(Bal::from(via_reth.clone()));
+        let raw_hex = format!("0x{}", hex::encode(rlp));
+        let via_nethermind = decode_raw_bal(&raw_hex).unwrap();
+
+        assert_eq!(via_reth, via_nethermind);
     }
 }
