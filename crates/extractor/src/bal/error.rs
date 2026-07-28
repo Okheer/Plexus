@@ -17,6 +17,12 @@ pub enum BalError {
     #[error("malformed bal response: missing or invalid field '{field}'")]
     MalformedResponse { field: &'static str },
 
+    #[error("invalid hex in raw bal response: {0}")]
+    BalHex(#[from] hex::FromHexError),
+
+    #[error("failed to rlp-decode raw bal: {0}")]
+    BalRlp(#[from] alloy_rlp::Error),
+
     /// EIP-7928 assigns index 0 to pre-execution system calls, 1..=n to the n
     /// transactions in block order, and n+1 to post-execution system calls.
     /// Anything above n+1 cannot be attributed and means the client and the

@@ -2948,6 +2948,7 @@ dependencies = [
  "alloy",
  "alloy-eip7928",
  "alloy-primitives",
+ "alloy-rlp",
  "dirs",
  "hex",
  "rand 0.8.6",
