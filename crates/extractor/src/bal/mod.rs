@@ -17,6 +17,22 @@ pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
 pub use reth::fetch_reth_bal;
 
+use alloy_eip7928::AccountChanges;
+
+use crate::fetcher::BlockId;
+use crate::rpc::client::RpcClient;
+
+pub async fn fetch_bal(
+    client: &RpcClient,
+    kind: ClientKind,
+    block_id: &BlockId,
+) -> Result<Vec<AccountChanges>, BalError> {
+    match kind {
+        ClientKind::Reth => fetch_reth_bal(client, block_id).await,
+        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_eip7928::{bal::Bal, AccountChanges, EMPTY_BLOCK_ACCESS_LIST_HASH};
