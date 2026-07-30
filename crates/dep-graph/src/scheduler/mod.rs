@@ -143,10 +143,7 @@ fn compute_levels(graph: &DepGraph) -> Vec<Vec<usize>> {
     }
 
     // First wave: everything already unblocked.
-    let mut current: Vec<NodeIndex> = g
-        .node_indices()
-        .filter(|node| indeg[node] == 0)
-        .collect();
+    let mut current: Vec<NodeIndex> = g.node_indices().filter(|node| indeg[node] == 0).collect();
 
     let mut levels: Vec<Vec<usize>> = Vec::new();
     while !current.is_empty() {
@@ -277,7 +274,9 @@ mod tests {
             // Pseudo-random but fixed edge/gas generation.
             let mut state = seed.wrapping_mul(2_654_435_761).wrapping_add(1);
             let mut next = || {
-                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1);
                 state >> 33
             };
 
@@ -377,10 +376,22 @@ mod tests {
         add_dep(&mut g, 1, 3);
         add_dep(&mut g, 2, 3);
         let gas = vec![
-            TxGas { tx_index: 0, gas_used: 10 },
-            TxGas { tx_index: 1, gas_used: 5 },
-            TxGas { tx_index: 2, gas_used: 20 },
-            TxGas { tx_index: 3, gas_used: 10 },
+            TxGas {
+                tx_index: 0,
+                gas_used: 10,
+            },
+            TxGas {
+                tx_index: 1,
+                gas_used: 5,
+            },
+            TxGas {
+                tx_index: 2,
+                gas_used: 20,
+            },
+            TxGas {
+                tx_index: 3,
+                gas_used: 10,
+            },
         ];
         assert_eq!(critical_path(&g, &gas).unwrap(), 40);
     }

@@ -2,13 +2,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleError {
     ZeroCores,
-    CyclicGraph {
-        tx_index: usize,
-    },
-    TxIndexOutOfBounds {
-        tx_index: usize,
-        tx_count: usize,
-    },
+    CyclicGraph { tx_index: usize },
+    TxIndexOutOfBounds { tx_index: usize, tx_count: usize },
 }
 
 impl fmt::Display for ScheduleError {
