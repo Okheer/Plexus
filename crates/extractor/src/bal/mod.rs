@@ -7,6 +7,7 @@ pub mod client_kind;
 pub mod error;
 pub mod index;
 pub mod normalize;
+pub mod parse;
 pub mod reth;
 
 pub use client_kind::ClientKind;
