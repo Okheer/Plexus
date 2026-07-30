@@ -89,6 +89,35 @@ fn slot_key(address: Address, slot: U256) -> StateKey {
     }
 }
 
+/// Turns a block access list into a [`BlockAccess`].
+///
+/// `ctx` supplies what the access list itself cannot: a BAL is keyed by address
+/// and carries no transaction count of its own, so how many transactions the
+/// block holds comes from the block header.
+///
+/// Every write keeps both the value written and the position it was written at,
+/// so the pre-execution system call at index 0 and the post-execution one at
+/// index n+1 stay distinguishable from the transactions that ran between them.
+///
+/// A malformed BAL is rejected rather than repaired. Reads and writes that
+/// overlap on one account, an index that does not fit a uint32, and a list
+/// holding more items than the block's gas limit pays for are all errors, and
+/// none of them leave a half-built [`BlockAccess`] behind.
+///
+/// `touched` holds accounts that turned up in the BAL with no writes *and* no
+/// reads — they appeared carrying nothing at all. An account with reads has
+/// already announced itself through the read set, so it is left out of
+/// `touched` rather than counted in both places.
+///
+/// # The read set is an upper bound
+///
+/// `reads` cannot be treated as a count of genuine `SLOAD`s. A slot lands in a
+/// BAL's `storage_reads` for three different reasons: someone actually read it,
+/// someone wrote back the value it already held (a no-op write), or someone
+/// wrote it inside a call that later reverted. The encoding records all three
+/// identically, so the BAL cannot tell them apart and neither can this parser.
+/// Anything counting reads downstream is counting an upper bound on the real
+/// number.
 pub fn parse_bal(bal: &[AccountChanges], ctx: &BlockContext) -> Result<BlockAccess, BalError> {
     let tx_count = ctx.tx_hashes.len();
     check_size_of_bal(bal, ctx)?;
@@ -144,7 +173,13 @@ pub fn parse_bal(bal: &[AccountChanges], ctx: &BlockContext) -> Result<BlockAcce
             });
         }
 
-        // reads carry no index so block level is as fine as this gets
+        // reads carry no block access index, so block level is as fine as the
+        // attribution gets, and there is nothing finer to reconstruct
+        //
+        // this set is an upper bound on genuine reads rather than a count of
+        // them, because a slot arrives here three ways that the encoding cannot
+        // tell apart: a real sload, a write of the value already stored, or a
+        // write inside a call that later reverted
         for slot in &account.storage_reads {
             reads.insert(slot_key(address, *slot));
         }

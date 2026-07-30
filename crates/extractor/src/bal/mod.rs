@@ -14,6 +14,7 @@ pub use client_kind::ClientKind;
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
 pub use normalize::{normalize_bal, BlockAccessSets};
+pub use parse::parse_bal;
 pub use reth::fetch_reth_bal;
 
 #[cfg(test)]
