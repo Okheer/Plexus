@@ -1,5 +1,5 @@
 use crate::cache::CacheError;
-use crate::fetcher::BlockId;
+use crate::fetcher::{BlockId, FetchError};
 use crate::rpc::RpcError;
 use thiserror::Error;
 
@@ -32,4 +32,19 @@ pub enum BalError {
 
     #[error("unsupported client '{name}', expected one of: reth, nethermind")]
     UnsupportedClient { name: String },
+}
+
+/// Resolving a block tag to a number during a cached BAL fetch goes through the
+/// block fetcher, which speaks [`FetchError`]. Its variants are a subset of
+/// `BalError`'s, so they flatten one-to-one rather than nesting a fetch error
+/// inside a BAL error.
+impl From<FetchError> for BalError {
+    fn from(e: FetchError) -> Self {
+        match e {
+            FetchError::Rpc(e) => BalError::Rpc(e),
+            FetchError::Cache(e) => BalError::Cache(e),
+            FetchError::BlockNotFound(id) => BalError::BlockNotFound(id),
+            FetchError::MalformedResponse { field } => BalError::MalformedResponse { field },
+        }
+    }
 }
