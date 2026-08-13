@@ -43,6 +43,11 @@ impl CacheConfig {
         let filename = format!("tx_{}.json", hex::encode(tx_hash.as_slice()));
         self.block_dir(chain_id, block_number).join(filename)
     }
+
+    // root/{chain_id}/{block_number}/bal.json
+    pub fn bal_path(&self, chain_id: u64, block_number: u64) -> PathBuf {
+        self.block_dir(chain_id, block_number).join("bal.json")
+    }
 }
 
 #[cfg(test)]
@@ -68,6 +73,13 @@ mod tests {
         assert!(filename.ends_with(".json"));
         assert!(!filename.contains("0x"));
         assert_eq!(filename, filename.to_lowercase());
+    }
+
+    #[test]
+    fn bal_path_structure() {
+        let config = CacheConfig::with_root(PathBuf::from("/tmp/plexus"));
+        let path = config.bal_path(1, 100);
+        assert_eq!(path, PathBuf::from("/tmp/plexus/1/100/bal.json"));
     }
 
     #[test]

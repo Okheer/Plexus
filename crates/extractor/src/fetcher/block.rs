@@ -37,7 +37,7 @@ async fn raw_get_block_by_number(client: &RpcClient, block_id: &BlockId) -> Resu
 // tag (latest , final etc ) to a concrete block number.
 // if block_id is already a number then it will directly return with no rpc call
 
-async fn resolve_block_number(client: &RpcClient, block_id: &BlockId) -> Result<u64> {
+pub(crate) async fn resolve_block_number(client: &RpcClient, block_id: &BlockId) -> Result<u64> {
     match block_id {
         BlockId::Number(n) => Ok(*n),
         BlockId::Tag(_) => {
