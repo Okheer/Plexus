@@ -8,8 +8,9 @@
 
 use alloy_eip7928::bal::DecodedBal;
 use alloy_eip7928::AccountChanges;
-use alloy_primitives::Bytes;
+use alloy_primitives::{Bytes, B256};
 
+use crate::bal::commitment::verify_raw_bal_commitment;
 use crate::bal::error::BalError;
 use crate::fetcher::BlockId;
 use crate::rpc::client::RpcClient;
@@ -19,9 +20,16 @@ use crate::rpc::client::RpcClient;
 /// Nethermind serves the BAL as raw RLP hex from `debug_getRawBlockAccessList`;
 /// this fetches those bytes and decodes them into the client-agnostic
 /// `alloy_eip7928` types. A `null` result means the node has no such block.
+///
+/// Pass the block header's `blockAccessListHash` as `expected` to have the
+/// response checked against the block's commitment. Because this path still
+/// holds the bytes the node sent, that check is over the wire encoding itself
+/// rather than a re-encoding of it — the strongest form available. `None` skips
+/// verification, for blocks whose header carries no commitment.
 pub async fn fetch_nethermind_bal(
     client: &RpcClient,
     block_id: &BlockId,
+    expected: Option<B256>,
 ) -> Result<Vec<AccountChanges>, BalError> {
     let raw: Option<String> = client
         .request("debug_getRawBlockAccessList", (block_id.as_rpc_param(),))
@@ -29,17 +37,38 @@ pub async fn fetch_nethermind_bal(
 
     let raw = raw.ok_or_else(|| BalError::BlockNotFound(block_id.clone()))?;
 
-    decode_raw_bal(&raw)
+    decode_raw_bal_verified(&raw, expected)
 }
 
 /// Decodes a `0x`-prefixed raw RLP block access list into its account changes.
 ///
 /// Split out from the fetch so the RLP decoding can be tested without a node and
-/// reused wherever raw BAL bytes need decoding (for example, verifying the
-/// `blockAccessListHash` commitment). The `0x` prefix is optional.
+/// reused wherever raw BAL bytes need decoding. The `0x` prefix is optional.
 pub fn decode_raw_bal(raw_hex: &str) -> Result<Vec<AccountChanges>, BalError> {
+    decode_raw_bal_verified(raw_hex, None)
+}
+
+/// Decodes raw RLP BAL hex, first checking it against a block commitment.
+///
+/// Verification runs on the raw bytes *before* decoding, so a BAL belonging to
+/// another block is rejected as a mismatch rather than surfacing as whatever
+/// unrelated decode error its contents happen to produce.
+///
+/// # Errors
+///
+/// Returns [`BalError::BalHashMismatch`] if `expected` is `Some` and the bytes
+/// don't hash to it, or the usual hex/RLP errors otherwise.
+pub fn decode_raw_bal_verified(
+    raw_hex: &str,
+    expected: Option<B256>,
+) -> Result<Vec<AccountChanges>, BalError> {
     let stripped = raw_hex.strip_prefix("0x").unwrap_or(raw_hex);
     let bytes = hex::decode(stripped)?;
+
+    if let Some(expected) = expected {
+        verify_raw_bal_commitment(&bytes, expected)?;
+    }
+
     let decoded = DecodedBal::from_rlp_bytes(Bytes::from(bytes))?;
     Ok(decoded.split().0.into_inner())
 }
@@ -97,7 +126,7 @@ mod tests {
         let server = server_returning(Value::String(rlp_hex(&sample_accounts()))).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let bal = fetch_nethermind_bal(&client, &BlockId::Number(100))
+        let bal = fetch_nethermind_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap();
 
@@ -111,7 +140,7 @@ mod tests {
         let server = server_returning(Value::String(rlp_hex(&[]))).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let bal = fetch_nethermind_bal(&client, &BlockId::Number(100))
+        let bal = fetch_nethermind_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap();
 
@@ -123,7 +152,7 @@ mod tests {
         let server = server_returning(Value::Null).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let err = fetch_nethermind_bal(&client, &BlockId::Number(100))
+        let err = fetch_nethermind_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap_err();
 
@@ -135,7 +164,7 @@ mod tests {
         let server = server_returning(Value::String("0xnothex".into())).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let err = fetch_nethermind_bal(&client, &BlockId::Number(100))
+        let err = fetch_nethermind_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap_err();
 
@@ -148,11 +177,86 @@ mod tests {
         let server = server_returning(Value::String("0x80".into())).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let err = fetch_nethermind_bal(&client, &BlockId::Number(100))
+        let err = fetch_nethermind_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap_err();
 
         assert!(matches!(err, BalError::BalRlp(_)));
+    }
+
+    // ── commitment verification on the raw-bytes path ────────────────────────
+
+    fn commitment_of(accounts: &[AccountChanges]) -> B256 {
+        alloy_primitives::keccak256(alloy_rlp::encode(Bal::from(accounts.to_vec())))
+    }
+
+    #[tokio::test]
+    async fn bal_matching_the_commitment_is_returned() {
+        let accounts = sample_accounts();
+        let server = server_returning(Value::String(rlp_hex(&accounts))).await;
+        let client = RpcClient::new(server.uri()).unwrap();
+
+        let bal = fetch_nethermind_bal(
+            &client,
+            &BlockId::Number(100),
+            Some(commitment_of(&accounts)),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(bal, accounts);
+    }
+
+    #[tokio::test]
+    async fn bal_not_matching_the_commitment_is_rejected() {
+        let server = server_returning(Value::String(rlp_hex(&sample_accounts()))).await;
+        let client = RpcClient::new(server.uri()).unwrap();
+
+        let err =
+            fetch_nethermind_bal(&client, &BlockId::Number(100), Some(B256::from([0x11; 32])))
+                .await
+                .unwrap_err();
+
+        assert!(matches!(err, BalError::BalHashMismatch { .. }));
+    }
+
+    // The check is over the bytes the node sent, so a single flipped byte is
+    // caught even though it would still decode into a valid-looking BAL.
+    #[test]
+    fn a_flipped_byte_in_the_raw_hex_is_caught() {
+        let accounts = sample_accounts();
+        let expected = commitment_of(&accounts);
+
+        let mut raw = alloy_rlp::encode(Bal::from(accounts));
+        let last = raw.len() - 1;
+        raw[last] ^= 0x01;
+        let tampered = format!("0x{}", hex::encode(&raw));
+
+        let err = decode_raw_bal_verified(&tampered, Some(expected)).unwrap_err();
+
+        assert!(matches!(err, BalError::BalHashMismatch { .. }));
+    }
+
+    // Verification runs before RLP decoding, so a payload that is both wrong for
+    // this block and undecodable reports the mismatch — the actionable cause —
+    // rather than an RLP error that says nothing about which block it came from.
+    #[test]
+    fn mismatch_is_reported_ahead_of_an_rlp_error() {
+        let err = decode_raw_bal_verified("0x80", Some(B256::from([0x11; 32]))).unwrap_err();
+
+        assert!(matches!(err, BalError::BalHashMismatch { .. }));
+    }
+
+    // An empty BAL is verified like any other, against the EIP-7928 sentinel.
+    #[test]
+    fn empty_bal_verifies_against_the_sentinel() {
+        let bal = decode_raw_bal_verified(
+            &rlp_hex(&[]),
+            Some(alloy_eip7928::EMPTY_BLOCK_ACCESS_LIST_HASH),
+        )
+        .unwrap();
+
+        assert!(bal.is_empty());
     }
 
     #[tokio::test]
@@ -160,7 +264,7 @@ mod tests {
         let server = server_returning(Value::String(rlp_hex(&sample_accounts()))).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        fetch_nethermind_bal(&client, &BlockId::Tag("latest".into()))
+        fetch_nethermind_bal(&client, &BlockId::Tag("latest".into()), None)
             .await
             .unwrap();
 

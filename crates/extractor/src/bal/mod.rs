@@ -15,11 +15,13 @@ pub use client_kind::ClientKind;
 pub use commitment::{bal_commitment_hash, verify_bal_commitment, verify_raw_bal_commitment};
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
+pub use nethermind::decode_raw_bal_verified;
 pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
 pub use reth::fetch_reth_bal;
 
 use alloy_eip7928::AccountChanges;
+use alloy_primitives::B256;
 
 use crate::fetcher::BlockId;
 use crate::rpc::client::RpcClient;
@@ -30,14 +32,30 @@ use crate::rpc::client::RpcClient;
 /// encodings, but both decode into the same `Vec<AccountChanges>`, so this is
 /// the single client-agnostic entry point callers (and the cache layer in
 /// [`fetch_bal_cached`](crate::fetcher::fetch_bal_cached)) use.
+///
+/// `expected` is the block header's `blockAccessListHash`. When it's `Some`, the
+/// response is checked against that commitment and a mismatch is an error, so no
+/// caller can use a BAL that isn't the one the block committed to. `None` skips
+/// the check, for blocks whose header carries no commitment.
+///
+/// Both clients are verified, but not equally: Nethermind's raw-RLP path checks
+/// the bytes the node sent, while Reth's JSON path can only check a re-encoding
+/// of the decoded response. See [`commitment`] for what that distinction costs.
 pub async fn fetch_bal(
     client: &RpcClient,
     kind: ClientKind,
     block_id: &BlockId,
+    expected: Option<B256>,
 ) -> Result<Vec<AccountChanges>, BalError> {
     match kind {
-        ClientKind::Reth => fetch_reth_bal(client, block_id).await,
-        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id).await,
+        ClientKind::Reth => {
+            let bal = fetch_reth_bal(client, block_id).await?;
+            if let Some(expected) = expected {
+                verify_bal_commitment(&bal, expected)?;
+            }
+            Ok(bal)
+        }
+        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id, expected).await,
     }
 }
 
