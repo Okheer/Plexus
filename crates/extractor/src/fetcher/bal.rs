@@ -71,10 +71,21 @@ pub async fn fetch_bal_cached(
     let path = cache.bal_path(chain_id, ctx.number);
 
     match read_json::<Vec<AccountChanges>>(&path) {
+        // a cached BAL is only reusable if it still matches the commitment
         Ok(bal) => match expected {
-            // a cached BAL is only reusable if it still matches the commitment
-            Some(expected) if verify_bal_commitment(&bal, expected).is_err() => {}
-            _ => return Ok(bal),
+            Some(expected) => match verify_bal_commitment(&bal, expected) {
+                Ok(()) => return Ok(bal),
+                // recoverable, so not returned as an error — but never silent,
+                // since a cache entry failing its own commitment is worth knowing
+                // about even when the refetch below papers over it
+                Err(e) => tracing::warn!(
+                    block_number = ctx.number,
+                    path = %path.display(),
+                    error = %e,
+                    "cached bal failed commitment verification; discarding and refetching"
+                ),
+            },
+            None => return Ok(bal),
         },
         Err(CacheError::NotFound(_)) => {} // fall through to a client fetch
         Err(CacheError::Malformed { .. }) => {} // corrupt file, refetch and overwrite

@@ -78,7 +78,7 @@ fn ensure_hash(computed: B256, expected: B256) -> Result<(), BalError> {
 #[cfg(test)]
 mod tests {
     use alloy_eip7928::{bal::Bal, EMPTY_BLOCK_ACCESS_LIST_HASH};
-    use alloy_primitives::U256;
+    use alloy_primitives::{b256, U256};
 
     use super::*;
 
@@ -255,10 +255,23 @@ mod tests {
 
     // ── the empty-BAL case from #17 ──────────────────────────────────────────
 
-    // Erigon's genesis block reported this sentinel; #17 confirmed it by hand.
+    /// The value #17 read off Erigon's genesis block on a real devnet node.
+    ///
+    /// Pinned as a literal rather than reused from `EMPTY_BLOCK_ACCESS_LIST_HASH`
+    /// on purpose: comparing our computation against alloy's constant only proves
+    /// the two agree with each other. This ties both of them to what a node
+    /// actually reported, so the check still holds if that constant ever moves.
+    const OBSERVED_EMPTY_BAL_HASH: B256 =
+        b256!("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
+
     #[test]
-    fn empty_bal_hashes_to_the_spec_sentinel() {
-        assert_eq!(bal_commitment_hash(&[]), EMPTY_BLOCK_ACCESS_LIST_HASH);
+    fn empty_bal_hashes_to_the_sentinel_observed_on_a_real_node() {
+        assert_eq!(bal_commitment_hash(&[]), OBSERVED_EMPTY_BAL_HASH);
+    }
+
+    #[test]
+    fn alloy_sentinel_matches_the_one_observed_on_a_real_node() {
+        assert_eq!(EMPTY_BLOCK_ACCESS_LIST_HASH, OBSERVED_EMPTY_BAL_HASH);
     }
 
     #[test]
