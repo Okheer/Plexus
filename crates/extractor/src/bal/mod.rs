@@ -17,6 +17,28 @@ pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
 pub use reth::fetch_reth_bal;
 
+use alloy_eip7928::AccountChanges;
+
+use crate::fetcher::BlockId;
+use crate::rpc::client::RpcClient;
+
+/// Fetches a block's access list, dispatching to the fetch path for `kind`.
+///
+/// Reth and Nethermind expose the BAL through different RPC methods and wire
+/// encodings, but both decode into the same `Vec<AccountChanges>`, so this is
+/// the single client-agnostic entry point callers (and the cache layer in
+/// [`fetch_bal_cached`](crate::fetcher::fetch_bal_cached)) use.
+pub async fn fetch_bal(
+    client: &RpcClient,
+    kind: ClientKind,
+    block_id: &BlockId,
+) -> Result<Vec<AccountChanges>, BalError> {
+    match kind {
+        ClientKind::Reth => fetch_reth_bal(client, block_id).await,
+        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id).await,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloy_eip7928::{bal::Bal, AccountChanges, EMPTY_BLOCK_ACCESS_LIST_HASH};
