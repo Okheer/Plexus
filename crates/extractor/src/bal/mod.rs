@@ -4,6 +4,7 @@
 //! `alloy_eip7928` types, so only the fetch path is client-specific.
 
 pub mod client_kind;
+pub mod commitment;
 pub mod error;
 pub mod index;
 pub mod nethermind;
@@ -11,6 +12,7 @@ pub mod normalize;
 pub mod reth;
 
 pub use client_kind::ClientKind;
+pub use commitment::{bal_commitment_hash, verify_bal_commitment, verify_raw_bal_commitment};
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
 pub use nethermind::fetch_nethermind_bal;
