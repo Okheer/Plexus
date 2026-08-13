@@ -1,5 +1,7 @@
 //! Scheduling logic: critical-path computation and the Greedy / OLS
-//! parallel-execution simulations.
+//! parallel-execution simulations. OLS is an LPT-style (Longest Processing
+//! Time) gas-aware heuristic: it is usually smarter than Greedy, but it is
+//! **not** an optimal scheduler and is not guaranteed to win.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -22,6 +24,10 @@ pub enum ScheduleStrategy {
     /// BFS level-by-level, round-robin assignment to cores.
     Greedy,
     /// Level-by-level, largest-gas-first onto the least-loaded core.
+    ///
+    /// This is an LPT-style heuristic: gas-aware and often better than
+    /// Greedy, but not an optimal scheduler — there are inputs where Greedy
+    /// produces the shorter schedule.
     Ols,
 }
 
@@ -30,15 +36,21 @@ pub enum ScheduleStrategy {
 pub struct ScheduleResult {
     pub strategy: ScheduleStrategy,
     pub core_count: usize,
+    /// Number of BFS barrier levels in the dependency graph — how many
+    /// synchronization barriers the schedule crosses. This counts *levels*,
+    /// not literal CPU execution rounds: transactions within a level run
+    /// concurrently and the level is accounted for by its busiest core.
     pub simulated_steps: usize,
     pub critical_path_gas: u64,
     pub sequential_gas: u64,
     pub speedup: f64,
 }
 
-/// Build a `tx_index -> gas_used` lookup, validating indices against the graph.
+/// Build a `tx_index -> gas_used` lookup, validating that every transaction in
+/// the graph has exactly one gas entry: indices must be in bounds, no index may
+/// be repeated, and no transaction may be left without gas.
 fn gas_lookup(graph: &DepGraph, gas: &[TxGas]) -> Result<HashMap<usize, u64>, ScheduleError> {
-    let mut map = HashMap::with_capacity(gas.len());
+    let mut map = HashMap::with_capacity(graph.tx_count);
     for tx in gas {
         if tx.tx_index >= graph.tx_count {
             return Err(ScheduleError::TxIndexOutOfBounds {
@@ -46,15 +58,28 @@ fn gas_lookup(graph: &DepGraph, gas: &[TxGas]) -> Result<HashMap<usize, u64>, Sc
                 tx_count: graph.tx_count,
             });
         }
-        map.insert(tx.tx_index, tx.gas_used);
+        if map.insert(tx.tx_index, tx.gas_used).is_some() {
+            return Err(ScheduleError::DuplicateGasEntry {
+                tx_index: tx.tx_index,
+            });
+        }
+    }
+    for tx_index in 0..graph.tx_count {
+        if !map.contains_key(&tx_index) {
+            return Err(ScheduleError::MissingGasEntry {
+                tx_index,
+                tx_count: graph.tx_count,
+            });
+        }
     }
     Ok(map)
 }
 
-/// Gas for a node, defaulting to 0 when the tx has no entry in `gas`.
+/// Gas for a node. Safe to index directly: [`gas_lookup`] guarantees an entry
+/// for every transaction, so a missing value can no longer silently become 0.
 fn node_gas(graph: &DepGraph, node: NodeIndex, gas: &HashMap<usize, u64>) -> u64 {
     let tx_index = graph.graph[node];
-    *gas.get(&tx_index).unwrap_or(&0)
+    gas[&tx_index]
 }
 
 /// Gas-weighted longest dependency chain (the latency floor).
@@ -189,6 +214,8 @@ fn simulate(
         parallel_time += loads.into_iter().max().unwrap_or(0);
     }
 
+    // `simulated_steps` counts the BFS barrier levels crossed, not literal
+    // CPU execution rounds; each level is a synchronization point.
     let critical_path_gas = critical_path(graph, gas)?;
 
     let speedup = if parallel_time == 0 {
@@ -216,7 +243,6 @@ pub fn greedy_schedule(
     simulate(graph, gas, cores, ScheduleStrategy::Greedy)
 }
 
-/// OLS strategy: BFS levels, largest-gas-first onto the least-loaded core.
 pub fn ols_schedule(
     graph: &DepGraph,
     gas: &[TxGas],
@@ -310,9 +336,47 @@ mod tests {
         assert_eq!(critical_path(&graph, &gas).unwrap(), 115);
     }
 
+    /// Makespan (wall-clock time) recovered from a result's speedup.
+    fn makespan(r: &ScheduleResult) -> f64 {
+        r.sequential_gas as f64 / r.speedup
+    }
+
     #[test]
-    fn ols_at_least_greedy_over_many_graphs() {
-        // 50 deterministic pseudo-random DAGs; OLS speedup must never be worse.
+    fn ols_can_be_worse_than_greedy() {
+        // Regression: the counterexample from the issue. Gas [2, 3, 2, 3, 2]
+        // on 2 cores. Greedy round-robin splits 2+2+2 / 3+3 -> makespan 6;
+        // OLS/LPT sorts to 3, 3, 2, 2, 2 and packs 3+2+2 / 3+2 -> makespan 7.
+        // So OLS loses here: it is not always better than Greedy.
+        let graph = DepGraph::new(5, 1);
+        let gas = vec![
+            gas_of(0, 2),
+            gas_of(1, 3),
+            gas_of(2, 2),
+            gas_of(3, 3),
+            gas_of(4, 2),
+        ];
+
+        let greedy = greedy_schedule(&graph, &gas, 2).unwrap();
+        let ols = ols_schedule(&graph, &gas, 2).unwrap();
+
+        assert!(
+            approx(makespan(&greedy), 6.0),
+            "greedy makespan: {}",
+            makespan(&greedy)
+        );
+        assert!(
+            approx(makespan(&ols), 7.0),
+            "OLS makespan: {}",
+            makespan(&ols)
+        );
+        assert!(
+            makespan(&ols) > makespan(&greedy),
+            "OLS must not be assumed better than Greedy on every input"
+        );
+    }
+
+    #[test]
+    fn ols_vs_greedy_empirical_comparison() {
         let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
         let mut next = || {
             seed ^= seed << 13;
@@ -321,33 +385,53 @@ mod tests {
             seed
         };
 
-        for case in 0..50 {
-            let n = 4 + (case % 9); // 4..=12 txs
+        let (mut better, mut equal, mut worse) = (0usize, 0usize, 0usize);
+
+        for case in 0..600 {
+            let n = 6 + (case % 7); // 6..=12 txs
             let mut graph = DepGraph::new(n, 1);
 
-            // Only add forward edges (i -> j, i < j) to guarantee acyclicity.
-            for i in 0..n {
-                for j in (i + 1)..n {
-                    if next() % 3 == 0 {
-                        add_dep(&mut graph, i, j);
+            let independent = case % 2 == 0; // fully independent txs -> one big BFS level
+            if !independent {
+                // Only add forward edges (i -> j, i < j) to guarantee acyclicity.
+                for i in 0..n {
+                    for j in (i + 1)..n {
+                        if next() % 3 == 0 {
+                            add_dep(&mut graph, i, j);
+                        }
                     }
                 }
             }
 
-            let gas: Vec<TxGas> = (0..n).map(|i| gas_of(i, 1 + (next() % 500))).collect();
+            // Small gas values: LPT packing only diverges from round-robin
+            // when the load per tx is comparable to the per-core capacity.
+            let gas: Vec<TxGas> = (0..n).map(|i| gas_of(i, 1 + (next() % 8))).collect();
 
-            let cores = 1 + (case % 4); // 1..=4 cores
+            let cores = 2 + (case % 2); // 2..=3 cores
 
             let greedy = greedy_schedule(&graph, &gas, cores).unwrap();
             let ols = ols_schedule(&graph, &gas, cores).unwrap();
 
-            assert!(
-                ols.speedup >= greedy.speedup - 1e-9,
-                "case {case}: OLS {} < Greedy {} ({n} txs, {cores} cores)",
-                ols.speedup,
-                greedy.speedup
-            );
+            let (gt, ot) = (makespan(&greedy), makespan(&ols));
+            if ot < gt - 1e-9 {
+                better += 1;
+            } else if ot > gt + 1e-9 {
+                worse += 1;
+            } else {
+                equal += 1;
+            }
         }
+
+        assert!(
+            better > 0 && worse > 0,
+            "expected both OLS-better and OLS-worse outcomes over 600 random graphs \
+             (better={better}, equal={equal}, worse={worse})"
+        );
+        assert!(
+            better >= worse,
+            "OLS should win at least as often as it loses \
+             (better={better}, equal={equal}, worse={worse})"
+        );
     }
 
     #[test]
@@ -370,6 +454,29 @@ mod tests {
                 tx_index: 5,
                 tx_count: 2
             })
+        ));
+    }
+
+    #[test]
+    fn missing_gas_entry_is_an_error() {
+        let graph = DepGraph::new(3, 1);
+        let gas = vec![gas_of(0, 10), gas_of(2, 10)];
+        assert!(matches!(
+            critical_path(&graph, &gas),
+            Err(ScheduleError::MissingGasEntry {
+                tx_index: 1,
+                tx_count: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn duplicate_gas_entry_is_an_error() {
+        let graph = DepGraph::new(2, 1);
+        let gas = vec![gas_of(0, 10), gas_of(0, 20)];
+        assert!(matches!(
+            critical_path(&graph, &gas),
+            Err(ScheduleError::DuplicateGasEntry { tx_index: 0 })
         ));
     }
 }
