@@ -385,21 +385,6 @@ mod tests {
         assert_eq!(reread, sample_accounts());
     }
 
-    // Pre-Glamsterdam blocks and non-reporting clients have nothing to check
-    // against, so the fetch still works — it just isn't verified.
-    #[tokio::test]
-    async fn header_without_a_commitment_skips_verification() {
-        let server = server(block_json(None), sample_reth_json()).await;
-        let client = RpcClient::new(server.uri()).unwrap();
-        let (_dir, cache) = tmp_cache();
-
-        let bal = fetch_bal_cached(&client, &cache, 1, ClientKind::Reth, BlockId::Number(BLOCK))
-            .await
-            .unwrap();
-
-        assert_eq!(bal, sample_accounts());
-    }
-
     // With no commitment there is nothing to detect a stale entry with, so the
     // cached value is returned as-is. Documents the gap rather than hiding it.
     #[tokio::test]

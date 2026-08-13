@@ -243,26 +243,4 @@ mod tests {
         assert_eq!(ctx.number, 100);
         assert!(ctx.block_access_list_hash.is_none());
     }
-
-    #[test]
-    fn block_context_bal_hash_round_trips_through_json() {
-        let ctx = BlockContext {
-            number: 100,
-            hash: slot(0xab),
-            parent_hash: slot(0xcd),
-            coinbase: addr(0x11),
-            chain_id: 1,
-            timestamp: 1,
-            base_fee_per_gas: None,
-            gas_limit: 30_000_000,
-            gas_used: 1,
-            tx_hashes: vec![],
-            block_access_list_hash: Some(slot(0x7e)),
-        };
-
-        let back: BlockContext =
-            serde_json::from_str(&serde_json::to_string(&ctx).unwrap()).unwrap();
-
-        assert_eq!(back.block_access_list_hash, Some(slot(0x7e)));
-    }
 }

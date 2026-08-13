@@ -264,20 +264,16 @@ mod tests {
         );
     }
 
-    // Pre-Glamsterdam blocks simply have no such field, so its absence must not
-    // fail the parse the way a missing `number` does.
+    // Pre-Glamsterdam blocks have no such field, and some clients emit the key
+    // with an explicit null rather than omitting it. Both must parse to `None`
+    // rather than failing the way a missing `number` does — they share a match
+    // arm, so they share a test.
     #[test]
-    fn missing_block_access_list_hash_is_none_not_error() {
-        let ctx = parse_block_context(&block_json_with(None), 1).unwrap();
-        assert!(ctx.block_access_list_hash.is_none());
-    }
-
-    // Some clients emit the key with an explicit null rather than omitting it.
-    #[test]
-    fn null_block_access_list_hash_is_none_not_error() {
-        let raw = block_json_with(Some(serde_json::Value::Null));
-        let ctx = parse_block_context(&raw, 1).unwrap();
-        assert!(ctx.block_access_list_hash.is_none());
+    fn absent_block_access_list_hash_is_none_not_error() {
+        for raw in [block_json_with(None), block_json_with(Some(Value::Null))] {
+            let ctx = parse_block_context(&raw, 1).unwrap();
+            assert!(ctx.block_access_list_hash.is_none());
+        }
     }
 
     // Present but unparseable is a real malformed response, not an absent field.

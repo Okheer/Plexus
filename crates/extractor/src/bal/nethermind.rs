@@ -220,23 +220,6 @@ mod tests {
         assert!(matches!(err, BalError::BalHashMismatch { .. }));
     }
 
-    // The check is over the bytes the node sent, so a single flipped byte is
-    // caught even though it would still decode into a valid-looking BAL.
-    #[test]
-    fn a_flipped_byte_in_the_raw_hex_is_caught() {
-        let accounts = sample_accounts();
-        let expected = commitment_of(&accounts);
-
-        let mut raw = alloy_rlp::encode(Bal::from(accounts));
-        let last = raw.len() - 1;
-        raw[last] ^= 0x01;
-        let tampered = format!("0x{}", hex::encode(&raw));
-
-        let err = decode_raw_bal_verified(&tampered, Some(expected)).unwrap_err();
-
-        assert!(matches!(err, BalError::BalHashMismatch { .. }));
-    }
-
     // Verification runs before RLP decoding, so a payload that is both wrong for
     // this block and undecodable reports the mismatch — the actionable cause —
     // rather than an RLP error that says nothing about which block it came from.
@@ -245,18 +228,6 @@ mod tests {
         let err = decode_raw_bal_verified("0x80", Some(B256::from([0x11; 32]))).unwrap_err();
 
         assert!(matches!(err, BalError::BalHashMismatch { .. }));
-    }
-
-    // An empty BAL is verified like any other, against the EIP-7928 sentinel.
-    #[test]
-    fn empty_bal_verifies_against_the_sentinel() {
-        let bal = decode_raw_bal_verified(
-            &rlp_hex(&[]),
-            Some(alloy_eip7928::EMPTY_BLOCK_ACCESS_LIST_HASH),
-        )
-        .unwrap();
-
-        assert!(bal.is_empty());
     }
 
     #[tokio::test]

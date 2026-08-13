@@ -132,14 +132,15 @@ mod tests {
     fn matching_raw_bytes_pass_verification() {
         let bal = sample_bal();
         let raw = raw_rlp(&bal);
-        let committed = keccak256(&raw);
 
-        assert!(verify_raw_bal_commitment(&raw, committed).is_ok());
+        assert!(verify_raw_bal_commitment(&raw, keccak256(&raw)).is_ok());
     }
 
-    // This is what lets the Reth (JSON, re-encoded) and Nethermind (raw bytes)
-    // paths be checked against the same header commitment. Without it, the
-    // decoded-BAL check would only be self-consistent, not tied to the wire form.
+    // The commitment #17 reproduced by hand: keccak-256 of the raw RLP equals
+    // the header's blockAccessListHash. This is what lets the Reth (JSON,
+    // re-encoded) and Nethermind (raw bytes) paths be checked against the same
+    // header commitment — without it the decoded-BAL check would only be
+    // self-consistent, not tied to the wire form.
     #[test]
     fn raw_and_decoded_hashes_agree() {
         let bal = sample_bal();
@@ -147,17 +148,12 @@ mod tests {
         assert_eq!(bal_commitment_hash(&bal), keccak256(raw_rlp(&bal)));
     }
 
-    // The commitment reproduced by hand in issue #17: keccak-256 of the raw RLP
-    // equals the header's blockAccessListHash. Same check, now in code.
-    #[test]
-    fn raw_bytes_verify_against_the_decoded_commitment() {
-        let bal = sample_bal();
-        let header_commitment = bal_commitment_hash(&bal);
-
-        assert!(verify_raw_bal_commitment(&raw_rlp(&bal), header_commitment).is_ok());
-    }
-
     // ── the corrupted / mismatched case ──────────────────────────────────────
+    //
+    // Both verify functions end in the same `computed == expected` comparison,
+    // and keccak is indifferent to *how* two inputs differ — a flipped byte, a
+    // truncation, a dropped account and a BAL from another block all reach it
+    // identically. So this is one case per function, not one per way to corrupt.
 
     #[test]
     fn corrupted_raw_bytes_are_caught() {
@@ -169,17 +165,6 @@ mod tests {
         corrupted[last] ^= 0xff;
 
         let err = verify_raw_bal_commitment(&corrupted, committed).unwrap_err();
-
-        assert!(matches!(err, BalError::BalHashMismatch { .. }));
-    }
-
-    #[test]
-    fn truncated_raw_bytes_are_caught() {
-        let bal = sample_bal();
-        let raw = raw_rlp(&bal);
-        let committed = keccak256(&raw);
-
-        let err = verify_raw_bal_commitment(&raw[..raw.len() - 1], committed).unwrap_err();
 
         assert!(matches!(err, BalError::BalHashMismatch { .. }));
     }
@@ -199,32 +184,15 @@ mod tests {
         assert!(matches!(err, BalError::BalHashMismatch { .. }));
     }
 
-    #[test]
-    fn dropped_account_is_caught() {
-        let bal = sample_bal();
-        let committed = bal_commitment_hash(&bal);
-
-        let err = verify_bal_commitment(&bal[..1], committed).unwrap_err();
-
-        assert!(matches!(err, BalError::BalHashMismatch { .. }));
-    }
-
-    // A BAL for the wrong block decodes perfectly and is still the wrong BAL.
-    #[test]
-    fn bal_from_a_different_block_is_caught() {
-        let other_block_commitment = bal_commitment_hash(&[]);
-
-        let err = verify_bal_commitment(&sample_bal(), other_block_commitment).unwrap_err();
-
-        assert!(matches!(err, BalError::BalHashMismatch { .. }));
-    }
-
+    // The error is the operator-facing signal, so it has to carry both hashes as
+    // data and render both in its message.
     #[test]
     fn mismatch_error_reports_both_hashes() {
         let bal = sample_bal();
         let expected = B256::from([0x11; 32]);
 
         let err = verify_bal_commitment(&bal, expected).unwrap_err();
+        let msg = err.to_string();
 
         match err {
             BalError::BalHashMismatch {
@@ -233,22 +201,9 @@ mod tests {
             } => {
                 assert_eq!(got, expected);
                 assert_eq!(computed, bal_commitment_hash(&bal));
-                assert_ne!(computed, got);
             }
             other => panic!("expected BalHashMismatch, got {other:?}"),
         }
-    }
-
-    // The message is the operator-facing signal, so both hashes must be in it.
-    #[test]
-    fn mismatch_error_message_names_both_hashes() {
-        let bal = sample_bal();
-        let expected = B256::from([0x11; 32]);
-
-        let msg = verify_bal_commitment(&bal, expected)
-            .unwrap_err()
-            .to_string();
-
         assert!(msg.contains(&bal_commitment_hash(&bal).to_string()));
         assert!(msg.contains(&expected.to_string()));
     }
@@ -265,36 +220,11 @@ mod tests {
         b256!("0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347");
 
     #[test]
-    fn empty_bal_hashes_to_the_sentinel_observed_on_a_real_node() {
+    fn empty_bal_matches_the_sentinel_observed_on_a_real_node() {
+        // no special-casing: RLP-encoding an empty list gives 0xc0, and the
+        // sentinel is simply its hash
+        assert_eq!(raw_rlp(&[]), vec![0xc0]);
         assert_eq!(bal_commitment_hash(&[]), OBSERVED_EMPTY_BAL_HASH);
-    }
-
-    #[test]
-    fn alloy_sentinel_matches_the_one_observed_on_a_real_node() {
         assert_eq!(EMPTY_BLOCK_ACCESS_LIST_HASH, OBSERVED_EMPTY_BAL_HASH);
-    }
-
-    #[test]
-    fn empty_bal_verifies_against_the_sentinel() {
-        assert!(verify_bal_commitment(&[], EMPTY_BLOCK_ACCESS_LIST_HASH).is_ok());
-    }
-
-    // The empty case must go through the same path as any other BAL: RLP-encoding
-    // an empty list gives 0xc0, and keccak(0xc0) is the sentinel.
-    #[test]
-    fn empty_raw_rlp_verifies_against_the_sentinel() {
-        let raw = raw_rlp(&[]);
-
-        assert_eq!(raw, vec![0xc0]);
-        assert!(verify_raw_bal_commitment(&raw, EMPTY_BLOCK_ACCESS_LIST_HASH).is_ok());
-    }
-
-    // A block that committed to the empty sentinel but served a populated BAL is
-    // a genuine disagreement, not an "empty means skip the check" shortcut.
-    #[test]
-    fn non_empty_bal_against_the_empty_sentinel_is_caught() {
-        let err = verify_bal_commitment(&sample_bal(), EMPTY_BLOCK_ACCESS_LIST_HASH).unwrap_err();
-
-        assert!(matches!(err, BalError::BalHashMismatch { .. }));
     }
 }
