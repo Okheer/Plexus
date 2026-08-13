@@ -161,6 +161,7 @@ mod tests {
             gas_limit: 30_000_000,
             gas_used: 15_000_000,
             tx_hashes,
+            block_access_list_hash: None,
         };
         write_json(&cache.block_header_path(CHAIN_ID, BLOCK_NUMBER), &ctx).unwrap();
     }

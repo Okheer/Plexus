@@ -65,6 +65,23 @@ fn extract_b256(raw: &Value, field: &'static str) -> Result<B256> {
     B256::from_str(s).map_err(|_| FetchError::MalformedResponse { field })
 }
 
+/// Extracts a `B256` field that may legitimately be absent.
+///
+/// A missing key and an explicit JSON `null` both read as `None` — clients
+/// report the latter for blocks before the field's fork activated. A present
+/// but unparseable value is still a malformed response.
+fn extract_opt_b256(raw: &Value, field: &'static str) -> Result<Option<B256>> {
+    match raw.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let s = v.as_str().ok_or(FetchError::MalformedResponse { field })?;
+            B256::from_str(s)
+                .map(Some)
+                .map_err(|_| FetchError::MalformedResponse { field })
+        }
+    }
+}
+
 fn extract_address(raw: &Value, field: &'static str) -> Result<Address> {
     let s = raw
         .get(field)
@@ -101,6 +118,9 @@ fn parse_block_context(raw: &Value, chain_id: u64) -> Result<BlockContext> {
         .map(parse_hex_u128)
         .transpose()?;
 
+    // absent on pre-Glamsterdam blocks and on clients that don't report it
+    let block_access_list_hash = extract_opt_b256(raw, "blockAccessListHash")?;
+
     let tx_hashes = raw
         .get("transactions")
         .and_then(Value::as_array)
@@ -132,6 +152,7 @@ fn parse_block_context(raw: &Value, chain_id: u64) -> Result<BlockContext> {
         gas_limit,
         gas_used,
         tx_hashes,
+        block_access_list_hash,
     })
 }
 
@@ -209,6 +230,69 @@ mod tests {
 
         let ctx = parse_block_context(&raw, 1).unwrap();
         assert!(ctx.base_fee_per_gas.is_none());
+    }
+
+    /// A minimal but complete block, so BAL-hash cases only vary the one field.
+    fn block_json_with(bal_hash: Option<serde_json::Value>) -> serde_json::Value {
+        let mut raw = serde_json::json!({
+            "number": "0x64",
+            "hash": format!("0x{}", "ab".repeat(32)),
+            "parentHash": format!("0x{}", "cd".repeat(32)),
+            "miner": format!("0x{}", "11".repeat(20)),
+            "timestamp": "0x1",
+            "gasLimit": "0x1",
+            "gasUsed": "0x1",
+            "transactions": []
+        });
+        if let Some(v) = bal_hash {
+            raw["blockAccessListHash"] = v;
+        }
+        raw
+    }
+
+    #[test]
+    fn parses_block_access_list_hash_when_present() {
+        // the EIP-7928 empty-BAL sentinel, as a Glamsterdam block would report it
+        let sentinel = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
+        let raw = block_json_with(Some(serde_json::json!(sentinel)));
+
+        let ctx = parse_block_context(&raw, 1).unwrap();
+
+        assert_eq!(
+            ctx.block_access_list_hash,
+            Some(B256::from_str(sentinel).unwrap())
+        );
+    }
+
+    // Pre-Glamsterdam blocks simply have no such field, so its absence must not
+    // fail the parse the way a missing `number` does.
+    #[test]
+    fn missing_block_access_list_hash_is_none_not_error() {
+        let ctx = parse_block_context(&block_json_with(None), 1).unwrap();
+        assert!(ctx.block_access_list_hash.is_none());
+    }
+
+    // Some clients emit the key with an explicit null rather than omitting it.
+    #[test]
+    fn null_block_access_list_hash_is_none_not_error() {
+        let raw = block_json_with(Some(serde_json::Value::Null));
+        let ctx = parse_block_context(&raw, 1).unwrap();
+        assert!(ctx.block_access_list_hash.is_none());
+    }
+
+    // Present but unparseable is a real malformed response, not an absent field.
+    #[test]
+    fn malformed_block_access_list_hash_errors_with_field_name() {
+        let raw = block_json_with(Some(serde_json::json!("0xnothex")));
+
+        let err = parse_block_context(&raw, 1).unwrap_err();
+
+        assert!(matches!(
+            err,
+            FetchError::MalformedResponse {
+                field: "blockAccessListHash"
+            }
+        ));
     }
 
     #[test]

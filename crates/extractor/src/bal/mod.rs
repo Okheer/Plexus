@@ -139,6 +139,7 @@ mod e2e_tests {
             gas_limit: 30_000_000,
             gas_used: 100_000,
             tx_hashes: vec![B256::from([0x11; 32]), B256::from([0x22; 32])],
+            block_access_list_hash: None,
         }
     }
 

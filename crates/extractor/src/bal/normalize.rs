@@ -145,6 +145,7 @@ mod tests {
             gas_limit: 30_000_000,
             gas_used: 1,
             tx_hashes: (0..tx_count).map(|i| B256::from([i as u8; 32])).collect(),
+            block_access_list_hash: None,
         }
     }
 

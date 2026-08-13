@@ -109,6 +109,17 @@ pub struct BlockContext {
     pub gas_used: u64,
     /// Ordered transaction hashes. Index in this Vec = `tx_index` in `AccessSet`.
     pub tx_hashes: Vec<B256>,
+    /// EIP-7928 commitment to the block's access list: the Keccak-256 of the
+    /// RLP-encoded BAL, as reported by the header's `blockAccessListHash`.
+    ///
+    /// `None` on pre-Glamsterdam blocks and on clients that don't report the
+    /// field, so its absence is not an error — it only means the fetched BAL
+    /// can't be checked against a commitment.
+    ///
+    /// `#[serde(default)]` keeps `block_header.json` files cached before this
+    /// field existed readable, rather than failing to parse and forcing a refetch.
+    #[serde(default)]
+    pub block_access_list_hash: Option<B256>,
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -207,5 +218,51 @@ mod tests {
             writes: HashSet::new(),
         };
         assert!(a.exact_reads().is_some());
+    }
+
+    // A `block_header.json` cached before `block_access_list_hash` existed must
+    // still deserialize, otherwise every existing cache entry reads back as
+    // malformed and silently triggers a refetch.
+    #[test]
+    fn block_context_without_bal_hash_field_still_deserializes() {
+        let legacy = serde_json::json!({
+            "number": 100,
+            "hash": slot(0xab),
+            "parent_hash": slot(0xcd),
+            "coinbase": addr(0x11),
+            "chain_id": 1,
+            "timestamp": 1,
+            "base_fee_per_gas": null,
+            "gas_limit": 30_000_000,
+            "gas_used": 1,
+            "tx_hashes": []
+        });
+
+        let ctx: BlockContext = serde_json::from_value(legacy).unwrap();
+
+        assert_eq!(ctx.number, 100);
+        assert!(ctx.block_access_list_hash.is_none());
+    }
+
+    #[test]
+    fn block_context_bal_hash_round_trips_through_json() {
+        let ctx = BlockContext {
+            number: 100,
+            hash: slot(0xab),
+            parent_hash: slot(0xcd),
+            coinbase: addr(0x11),
+            chain_id: 1,
+            timestamp: 1,
+            base_fee_per_gas: None,
+            gas_limit: 30_000_000,
+            gas_used: 1,
+            tx_hashes: vec![],
+            block_access_list_hash: Some(slot(0x7e)),
+        };
+
+        let back: BlockContext =
+            serde_json::from_str(&serde_json::to_string(&ctx).unwrap()).unwrap();
+
+        assert_eq!(back.block_access_list_hash, Some(slot(0x7e)));
     }
 }
