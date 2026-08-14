@@ -1,5 +1,6 @@
 use crate::rpc::transport::RetryAfterParseHeader;
 use alloy::transports::{RpcError as AlloyRpcError, TransportError, TransportErrorKind};
+use std::result;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -104,7 +105,7 @@ pub enum RpcError {
 }
 
 // the ok type varies, the error is always ours
-pub type Result<T> = std::result::Result<T, RpcError>;
+pub type Result<T> = result::Result<T, RpcError>;
 
 // turns an alloy transport error into our typed error plus a retry-or-not verdict
 pub fn classify(err: TransportError, method: &str) -> (RpcError, RetryFlag) {
@@ -361,14 +362,14 @@ mod tests {
     fn classify_500_502_504_are_retryable() {
         for code in [500u16, 502, 504] {
             let (err, flag) = classify(TransportErrorKind::http_error(code, "boom".into()), "m");
-            assert_eq!(flag, RetryFlag::Retry, "status {code}");
+            assert_eq!(flag, RetryFlag::Retry);
             let matched = matches!(
                 (code, &err),
                 (500, RpcError::InternalServerError { .. })
                     | (502, RpcError::BadGateway { .. })
                     | (504, RpcError::GatewayTimeout { .. })
             );
-            assert!(matched, "status {code} mapped wrong: {err:?}");
+            assert!(matched);
         }
     }
 
