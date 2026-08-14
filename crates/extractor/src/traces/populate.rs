@@ -1,4 +1,4 @@
-use crate::cache::{config::CacheConfig, io::read_json, CacheError};
+use crate::cache::{config::CacheConfig, io, CacheError};
 use crate::rpc::client::RpcClient;
 use crate::traces::error::{TraceError, TraceTaskError};
 use alloy_primitives::B256;
@@ -81,7 +81,7 @@ async fn fetch_and_write_traces(
             };
 
             let path = cache.tx_path(chain_id, block_number, &hash);
-            match crate::cache::io::write_json(&path, &trace) {
+            match io::write_json(&path, &trace) {
                 Ok(()) => (hash, Ok(())),
                 Err(e) => (hash, Err(TraceTaskError::from(e))),
             }
@@ -124,7 +124,7 @@ pub async fn populate_traces(
 ) -> Result<TraceFetchSummary, TraceError> {
     // read cache file and load the txn from header
     let header_path = cache.block_header_path(chain_id, block_number);
-    let block_ctx = read_json::<BlockContext>(&header_path).map_err(|e| match e {
+    let block_ctx = io::read_json::<BlockContext>(&header_path).map_err(|e| match e {
         CacheError::NotFound(_) => TraceError::BlockHeaderNotCached {
             chain_id,
             block_number,
@@ -177,8 +177,8 @@ pub async fn populate_traces(
 mod tests {
     use super::*;
     use crate::cache::config::CacheConfig;
-    use alloy_primitives::B256;
-    use std::fs::{create_dir_all, write, File};
+    use alloy_primitives::{Address, B256};
+    use std::fs::{create_dir_all, metadata, set_permissions, write, File};
     use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::{tempdir, TempDir};
     use wiremock::matchers::method;
@@ -321,11 +321,7 @@ mod tests {
             .iter()
             .filter(|h| cache.tx_path(chain_id, block_number, h).exists())
             .count();
-        assert_eq!(
-            files_on_disk, 2,
-            "expected 2 files on disk, found {}",
-            files_on_disk
-        );
+        assert_eq!(files_on_disk, 2);
     }
     #[tokio::test]
     async fn test_currupted_blockheader_returns_malformed_error() {
@@ -362,7 +358,7 @@ mod tests {
             number: block_number,
             hash: B256::ZERO,
             parent_hash: B256::ZERO,
-            coinbase: alloy_primitives::Address::ZERO,
+            coinbase: Address::ZERO,
             chain_id,
             timestamp: 1234567890,
             base_fee_per_gas: None,
@@ -370,16 +366,15 @@ mod tests {
             gas_used: 15000000,
             tx_hashes: vec![hash_1, hash_2],
         };
-        crate::cache::io::write_json(&cache.block_header_path(chain_id, block_number), &block_ctx)
-            .unwrap();
+        io::write_json(&cache.block_header_path(chain_id, block_number), &block_ctx).unwrap();
 
         //  Create the two tx_{hash}.json files to pretend they are cached
-        crate::cache::io::write_json(
+        io::write_json(
             &cache.tx_path(chain_id, block_number, &hash_1),
             &serde_json::json!({}),
         )
         .unwrap();
-        crate::cache::io::write_json(
+        io::write_json(
             &cache.tx_path(chain_id, block_number, &hash_2),
             &serde_json::json!({}),
         )
@@ -396,8 +391,8 @@ mod tests {
         assert!(summary.cache_hits.contains(&hash_1));
         assert!(summary.cache_hits.contains(&hash_2));
 
-        assert!(summary.fetched.is_empty(), "fetched should be empty");
-        assert!(summary.failed.is_empty(), "failed should be empty");
+        assert!(summary.fetched.is_empty());
+        assert!(summary.failed.is_empty());
 
         assert_eq!(summary.total(), 2);
         assert!(summary.is_complete());
@@ -423,33 +418,23 @@ mod tests {
 
         // Create the block directory before we run the code
         let block_dir = cache.block_dir(chain_id, block_number);
-        std::fs::create_dir_all(&block_dir).unwrap();
+        create_dir_all(&block_dir).unwrap();
 
         // Lock the directory down (make it Read-Only) so write_json is guaranteed to fail
-        let mut perms = std::fs::metadata(&block_dir).unwrap().permissions();
+        let mut perms = metadata(&block_dir).unwrap().permissions();
         perms.set_readonly(true);
-        std::fs::set_permissions(&block_dir, perms).unwrap();
+        set_permissions(&block_dir, perms).unwrap();
 
         // Run the inner fetch-and-write function directly
         let (fetched, failed) =
             fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
 
-        assert!(
-            fetched.is_empty(),
-            "nothing should be fetched and written successfully"
-        );
-        assert_eq!(
-            failed.len(),
-            1,
-            "the hash should be placed in the failed list"
-        );
+        assert!(fetched.is_empty());
+        assert_eq!(failed.len(), 1);
 
         // Prove exactly WHY it failed using the new TraceTaskError enum
         let (failed_hash, error_reason) = &failed[0];
         assert_eq!(failed_hash, &hash);
-        assert!(
-            matches!(error_reason, TraceTaskError::CacheWrite { .. }),
-            "Expected a disk write error!"
-        );
+        assert!(matches!(error_reason, TraceTaskError::CacheWrite { .. }));
     }
 }

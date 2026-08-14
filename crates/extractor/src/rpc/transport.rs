@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -21,7 +22,8 @@ impl fmt::Display for RetryAfterParseHeader {
         write!(f, "error code:- (HTTP {})", self.status)
     }
 }
-impl std::error::Error for RetryAfterParseHeader {}
+
+impl Error for RetryAfterParseHeader {}
 
 // only the delay-seconds form of retry-after, the http-date form is ignored
 fn parse_retry_after(h: &HeaderMap) -> Option<Duration> {

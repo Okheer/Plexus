@@ -4,7 +4,7 @@ use crate::cache::CacheError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fs;
-use std::io::Write;
+use std::io::{self, ErrorKind, Write};
 use std::path::Path;
 
 /// Writes cache on disk using an atomic-write pattern.
@@ -31,7 +31,7 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), CacheError
     //converts a generic value into json bytes vector
     let serialized_bytes = serde_json::to_vec(value).map_err(|e| CacheError::Io {
         path: path.to_path_buf(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        source: io::Error::new(ErrorKind::InvalidData, e),
     })?;
 
     //creates temporary file path.(eg-"data.json.tmp")
@@ -158,7 +158,7 @@ mod tests {
     fn read_malformed_json_returns_malformed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("bad.json");
-        std::fs::write(&path, b"this is not json").unwrap();
+        fs::write(&path, b"this is not json").unwrap();
 
         let err = read_json::<Dummy>(&path).unwrap_err();
 

@@ -283,7 +283,7 @@ mod tests {
             access_bal(1, vec![], vec![key()]),
         ];
         let g_bal = build_graph(&bal_sets, &ctx(2)).unwrap();
-        assert_eq!(g_bal.edge_count(), 0, "BAL reads must not create WAR edges");
+        assert_eq!(g_bal.edge_count(), 0);
 
         // Exact mode: identical topology → exactly one WAR edge 0 → 1.
         let exact_sets = vec![
@@ -330,11 +330,7 @@ mod tests {
         ];
 
         let g = build_graph(&sets, &ctx(2)).unwrap();
-        assert_eq!(
-            g.edge_count(),
-            1,
-            "three overlapping keys must collapse to one edge"
-        );
+        assert_eq!(g.edge_count(), 1);
     }
 
     #[test]

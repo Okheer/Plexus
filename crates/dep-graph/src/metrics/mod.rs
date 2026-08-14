@@ -205,29 +205,14 @@ mod tests {
 
             let m = compute_metrics(&g);
 
-            assert!(
-                (0.0..=1.0).contains(&m.parallelization_coefficient),
-                "coefficient out of range: {}",
-                m.parallelization_coefficient
-            );
-            assert!(
-                m.task_group_count >= 1 && m.task_group_count <= tx_count,
-                "task_group_count {} outside [1, {}]",
-                m.task_group_count,
-                tx_count
-            );
-            assert!(
-                m.largest_group_size >= 1 && m.largest_group_size <= tx_count,
-                "largest_group_size {} outside [1, {}]",
-                m.largest_group_size,
-                tx_count
-            );
+            assert!((0.0..=1.0).contains(&m.parallelization_coefficient));
+            assert!(m.task_group_count >= 1 && m.task_group_count <= tx_count);
+            assert!(m.largest_group_size >= 1 && m.largest_group_size <= tx_count);
             assert!(m.independent_tx_count <= tx_count);
             // The BFS component count must agree with `connected_components`.
             assert_eq!(
                 m.task_group_count,
-                weakly_connected_component_sizes(&g).len(),
-                "connected_components disagreed with BFS component count"
+                weakly_connected_component_sizes(&g).len()
             );
         }
     }

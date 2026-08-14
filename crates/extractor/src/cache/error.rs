@@ -1,3 +1,4 @@
+use std::io;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -13,8 +14,5 @@ pub enum CacheError {
     },
 
     #[error("IO error at {path}: {source}")]
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
+    Io { path: PathBuf, source: io::Error },
 }
