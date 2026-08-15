@@ -104,6 +104,7 @@ mod tests {
     use crate::metrics::independence_coefficient;
     use alloy_primitives::B256;
     use petgraph::visit::EdgeRef;
+    use std::sync::Arc;
 
     fn addr(byte: u8) -> Address {
         Address::from([byte; 20])
@@ -152,7 +153,7 @@ mod tests {
             types::types::ReadAttribution::PerTransaction(keys(items))
         }
         fn block(items: Vec<StateKey>) -> types::types::ReadAttribution {
-            types::types::ReadAttribution::BlockLevel(keys(items))
+            types::types::ReadAttribution::BlockLevel(Arc::new(keys(items)))
         }
     }
 

@@ -1,5 +1,6 @@
 // Core types shared across every module in Plexus.
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use alloy_primitives::{Address, Bytes, B256, U256};
 use serde::{Deserialize, Serialize};
@@ -29,14 +30,15 @@ pub enum ReadAttribution {
     /// Exact reads, as produced by `prestateTracer` in trace mode.
     PerTransaction(HashSet<StateKey>),
     /// Block-level reads with no per-transaction attribution, as produced by BAL mode.
-    BlockLevel(HashSet<StateKey>),
+    BlockLevel(Arc<HashSet<StateKey>>),
 }
 
 impl ReadAttribution {
     /// Returns the underlying key set regardless of attribution level.
     pub fn keys(&self) -> &HashSet<StateKey> {
         match self {
-            ReadAttribution::PerTransaction(k) | ReadAttribution::BlockLevel(k) => k,
+            ReadAttribution::PerTransaction(k) => k,
+            ReadAttribution::BlockLevel(k) => k,
         }
     }
 
@@ -158,7 +160,7 @@ impl BlockAccess {
         Self {
             block,
             writes,
-            reads: ReadAttribution::BlockLevel(reads),
+            reads: ReadAttribution::BlockLevel(Arc::new(reads)),
             touched,
         }
     }
@@ -265,7 +267,7 @@ mod tests {
     #[test]
     fn read_attribution_is_exact_iff_per_transaction() {
         assert!(ReadAttribution::PerTransaction(HashSet::new()).is_exact());
-        assert!(!ReadAttribution::BlockLevel(HashSet::new()).is_exact());
+        assert!(!ReadAttribution::BlockLevel(Arc::new(HashSet::new())).is_exact());
     }
 
     #[test]
@@ -284,7 +286,7 @@ mod tests {
         let a = AccessSet {
             tx_index: 0,
             tx_hash: slot(0),
-            reads: ReadAttribution::BlockLevel(HashSet::new()),
+            reads: ReadAttribution::BlockLevel(Arc::new(HashSet::new())),
             writes: HashSet::new(),
         };
         assert!(a.exact_reads().is_none());
