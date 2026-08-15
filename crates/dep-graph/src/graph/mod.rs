@@ -5,6 +5,7 @@ pub use builder::build_graph;
 
 use self::errors::DepGraphError;
 use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::Direction;
 use types::types::ConflictType;
 
 #[derive(Debug)]
@@ -57,12 +58,12 @@ impl DepGraph {
         let node = self.node_for_tx(tx_index)?;
         let independent = self
             .graph
-            .neighbors_directed(node, petgraph::Direction::Incoming)
+            .neighbors_directed(node, Direction::Incoming)
             .next()
             .is_none()
             && self
                 .graph
-                .neighbors_directed(node, petgraph::Direction::Outgoing)
+                .neighbors_directed(node, Direction::Outgoing)
                 .next()
                 .is_none();
         Ok(independent)

@@ -1,6 +1,7 @@
 use alloy::transports::TransportError;
 use std::cmp::min;
 use std::future::Future;
+use std::result;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -46,7 +47,7 @@ pub async fn run_with_retry<R, F, Fut>(
 ) -> Result<R>
 where
     F: FnMut() -> Fut, // re-callable: each call is one attempt
-    Fut: Future<Output = std::result::Result<R, TransportError>>,
+    Fut: Future<Output = result::Result<R, TransportError>>,
 {
     let mut attempt = 0u32;
     loop {
@@ -55,7 +56,7 @@ where
         let outcome = timeout(attempt_timeout, operation()).await;
         match outcome {
             Ok(Ok(r)) => return Ok(r),
-            Err(_elapsed) => {
+            Err(_) => {
                 let rpc_error = RpcError::Timeout {
                     elapsed: Some(attempt_timeout),
                     method: method.to_string(),
@@ -201,7 +202,8 @@ mod tests {
     use alloy::transports::TransportErrorKind;
     use reqwest::StatusCode;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
 
     // tiny delays so the real backoff sleeps don't slow the suite down
     fn fast_cfg() -> RetryConfig {
@@ -336,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn times_out_then_exhausts() {
         let op = || async {
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            sleep(Duration::from_secs(30)).await;
             Ok::<u64, TransportError>(7)
         };
         let out = run_with_retry(&sem(), "m", &fast_cfg(), Duration::from_millis(10), op).await;
@@ -353,7 +355,7 @@ mod tests {
             async move {
                 let n = c.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
-                    tokio::time::sleep(Duration::from_secs(30)).await; // blow the timeout once
+                    sleep(Duration::from_secs(30)).await; // blow the timeout once
                 }
                 Ok::<u64, TransportError>(7)
             }
@@ -458,8 +460,8 @@ mod tests {
     #[tokio::test]
     async fn permit_released_during_backoff() {
         let sem = Arc::new(Semaphore::new(1));
-        let order = Arc::new(std::sync::Mutex::new(Vec::<&str>::new()));
-        let a_has_permit = Arc::new(tokio::sync::Notify::new());
+        let order = Arc::new(Mutex::new(Vec::<&str>::new()));
+        let a_has_permit = Arc::new(Notify::new());
 
         let a = {
             let (sem, order, signal) = (sem.clone(), order.clone(), a_has_permit.clone());
