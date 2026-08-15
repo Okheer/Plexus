@@ -1,6 +1,7 @@
 use crate::cache::CacheError;
 use crate::fetcher::{BlockId, FetchError};
 use crate::rpc::RpcError;
+use alloy_primitives::{Address, U256};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -32,6 +33,21 @@ pub enum BalError {
 
     #[error("unsupported client '{name}', expected one of: reth, nethermind")]
     UnsupportedClient { name: String },
+
+    #[error("malformed bal: slot {slot} on address {address} appears in both storage_reads and storage_changes")]
+    DisjointnessViolation { address: Address, slot: U256 },
+
+    #[error("index {index} not fitting in a uint32 as per EIP")]
+    IndexTooLarge { index: u64 },
+
+    #[error(
+        "BAL with item count being {item_count} is too large, max items - {max_items}, gas limit being {gas_limit}"
+    )]
+    BlockAccessListTooLarge {
+        item_count: u64,
+        max_items: u64,
+        gas_limit: u64,
+    },
 }
 
 /// Resolving a block tag to a number during a cached BAL fetch goes through the

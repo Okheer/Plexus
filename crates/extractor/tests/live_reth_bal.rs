@@ -14,13 +14,14 @@ use parser::bal::{fetch_reth_bal, normalize_bal};
 use parser::cache::config::CacheConfig;
 use parser::fetcher::{fetch_block_metadata, BlockId};
 use parser::rpc::client::RpcClient;
+use std::env;
 
 #[tokio::test]
 #[ignore = "requires a live Reth node; set PLEXUS_RPC_URL"]
 async fn live_fetch_and_normalize() {
-    let url = std::env::var("PLEXUS_RPC_URL")
-        .expect("set PLEXUS_RPC_URL to the Reth node's RPC endpoint");
-    let block_id = match std::env::var("PLEXUS_BLOCK") {
+    let url =
+        env::var("PLEXUS_RPC_URL").expect("set PLEXUS_RPC_URL to the Reth node's RPC endpoint");
+    let block_id = match env::var("PLEXUS_BLOCK") {
         Ok(hex) => BlockId::Number(u64::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap()),
         Err(_) => BlockId::Tag("latest".to_string()),
     };
@@ -33,7 +34,7 @@ async fn live_fetch_and_normalize() {
     println!("chain_id = {chain_id}");
 
     // the header gives us the transaction hashes the BAL itself doesn't carry
-    let cache = CacheConfig::with_root(std::env::temp_dir().join("plexus-live-test"));
+    let cache = CacheConfig::with_root(env::temp_dir().join("plexus-live-test"));
     let ctx = fetch_block_metadata(&client, &cache, chain_id, block_id.clone())
         .await
         .expect("failed to fetch block header");
