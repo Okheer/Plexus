@@ -24,9 +24,7 @@ impl RpcClient {
         Self::with_config(ClientConfig::new(&url_str))
     }
 
-    // builds the config then hands it over. returns an error on a bad url so the
-    // caller gets to decide whether to bail
-    fn with_config(client_config: ClientConfig) -> Result<Self> {
+    pub fn with_config(client_config: ClientConfig) -> Result<Self> {
         let url = Url::parse(&client_config.url).map_err(|e| RpcError::InvalidUrl {
             url: client_config.url.clone(),
             method: e.to_string(),
