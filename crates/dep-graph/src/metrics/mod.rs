@@ -53,7 +53,24 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
     let group_sizes = weakly_connected_component_sizes(graph);
     let largest_group_size = group_sizes.iter().copied().max().unwrap_or(0);
     let singleton_group_count = group_sizes.iter().filter(|&&size| size == 1).count();
+    let (cpl, map) = compute_topo_levels(graph);
 
+    let parallel_speedup_factor = if cpl == 0 {
+        1.0
+    } else {
+        tx_count as f64 / cpl as f64
+    };
+
+    let dependency_graph_density = {
+        let n = tx_count;
+        if n < 2 {
+            0.0
+        } else {
+            let max_edges = n * (n - 1) / 2;
+            graph.edge_count() as f64 / max_edges as f64
+        }
+    };
+    
     BlockMetrics {
         tx_count,
         independent_tx_count,
@@ -61,6 +78,10 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
         task_group_count,
         largest_group_size,
         singleton_group_count,
+        critical_path_length:cpl,
+        max_achievable_parallelism: map,
+        parallel_speedup_factor ,
+        dependency_graph_density ,
     }
 }
 
@@ -107,7 +128,7 @@ fn weakly_connected_component_sizes(graph: &DepGraph) -> Vec<usize> {
 /// Compute the longest dependency chain via single-pass topological DP.
 ///
 /// Assigns every node a `level`:
-/// 
+///
 /// level[root] = 1
 /// level[node] = max(level[predecessors]) + 1
 ///
@@ -125,7 +146,7 @@ pub fn critical_path_length(graph: &DepGraph) -> usize {
     for node in &topo {
         let pred_max = graph
             .graph
-            .neighbor_directed(*node, Direction::Incoming)
+            .neighbors_directed(*node, Direction::Incoming)
             .map(|pred| level[pred.index()])
             .max()
             .unwrap_or(0);
@@ -133,6 +154,41 @@ pub fn critical_path_length(graph: &DepGraph) -> usize {
     }
 
     level.into_iter().max().unwrap_or(0)
+}
+
+pub fn max_achievable_parallelism(graph: &DepGraph) -> usize {
+    
+    compute_topo_levels(graph).1
+}
+
+fn compute_topo_levels(graph: &DepGraph) -> (usize,usize){
+    if graph.tx_count == 0{
+        return (0,0);
+    }
+
+    let topo = toposort(&graph.graph, None).expect("dependency graph must be acyclic");
+    let mut level = vec![0usize; graph.graph.node_count()];
+
+    for node in &topo {
+        let pred_max = graph
+                     .graph
+                     .neighbors_directed(*node, Direction::Incoming)
+                     .map(|pred| level[pred.index()])
+                     .max()
+                     .unwrap_or(0);
+         level[node.index()] = pred_max + 1; 
+    }
+
+    let cpl = level.iter().copied().max().unwrap_or(0);
+
+    let mut wave_sizes = vec![0usize; cpl + 1];
+    for &l in &level{
+        wave_sizes[l] += 1;
+    }
+
+    let map = wave_sizes.into_iter().max().unwrap_or(0);
+
+    (cpl,map)
 }
 
 #[cfg(test)]
