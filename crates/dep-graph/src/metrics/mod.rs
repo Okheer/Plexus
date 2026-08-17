@@ -2,7 +2,8 @@
 //! task-group (weakly connected component) statistics.
 
 use crate::graph::DepGraph;
-use petgraph::algo::connected_components;
+use petgraph::algo::{connected_components, toposort};
+use petgraph::Direction;
 use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,7 +17,7 @@ pub struct BlockMetrics {
     pub critical_path_length: usize,
     pub max_achievable_parallelism: usize,
     pub parallel_speedup_factor: f64,
-    pub dependency_graph_density: f64.
+    pub dependency_graph_density: f64,
 }
 
 pub fn independence_coefficient(graph: &DepGraph) -> f64 {
@@ -102,6 +103,36 @@ fn weakly_connected_component_sizes(graph: &DepGraph) -> Vec<usize> {
     }
 
     sizes
+}
+/// Compute the longest dependency chain via single-pass topological DP.
+///
+/// Assigns every node a `level`:
+/// 
+/// level[root] = 1
+/// level[node] = max(level[predecessors]) + 1
+///
+/// Returns the maximum level, i.e. the critical path length.
+/// Returns `0` for an empty graph.
+pub fn critical_path_length(graph: &DepGraph) -> usize {
+    if graph.tx_count == 0 {
+        return 0;
+    }
+
+    let topo = toposort(&graph.graph, None).expect("Dependency graph must ");
+
+    let mut level = vec![0usize; graph.graph.node_count()];
+
+    for node in &topo {
+        let pred_max = graph
+            .graph
+            .neighbor_directed(*node, Direction::Incoming)
+            .map(|pred| level[pred.index()])
+            .max()
+            .unwrap_or(0);
+        level[node.index()] = pred_max + 1;
+    }
+
+    level.into_iter().max().unwrap_or(0)
 }
 
 #[cfg(test)]
