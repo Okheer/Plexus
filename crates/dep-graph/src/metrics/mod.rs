@@ -13,6 +13,10 @@ pub struct BlockMetrics {
     pub task_group_count: usize,
     pub largest_group_size: usize,
     pub singleton_group_count: usize,
+    pub critical_path_length: usize,
+    pub max_achievable_parallelism: usize,
+    pub parallel_speedup_factor: f64,
+    pub dependency_graph_density: f64.
 }
 
 pub fn independence_coefficient(graph: &DepGraph) -> f64 {
