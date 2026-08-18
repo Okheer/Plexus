@@ -379,4 +379,19 @@ mod tests {
         // edges=4, max_possible=6 → 4/6 ≈ 0.6667
         assert!((m.dependency_graph_density - 4.0 / 6.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn linear_chain_new_metrics() {
+        // 0 -> 1 -> 2 -> 3
+        let mut g = DepGraph::new(4, 1);
+        for i in 0..3 {
+            add_edge(&mut g, i, i + 1);
+        }
+        let m = compute_metrics(&g);
+        assert_eq!(m.critical_path_length, 4);
+        assert_eq!(m.max_achievable_parallelism, 1);
+        assert_eq!(m.parallel_speedup_factor, 1.0); // 4/4 = 1.0
+                                                    // edges=3, max_possible=4*3/2=6 → 3/6 = 0.5
+        assert!((m.dependency_graph_density - 0.5).abs() < 1e-10);
+    }
 }
