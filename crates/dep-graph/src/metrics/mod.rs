@@ -317,7 +317,11 @@ mod tests {
                     if a > b {
                         std::mem::swap(&mut a, &mut b);
                     }
-                    add_edge(&mut g, a, b);
+                    let node_a = g.node_for_tx(a).unwrap();
+                    let node_b = g.node_for_tx(b).unwrap();
+                    if !g.graph.contains_edge(node_a, node_b) {
+                        add_edge(&mut g, a, b);
+                    }
                 }
             }
 
@@ -327,6 +331,9 @@ mod tests {
             assert!(m.task_group_count >= 1 && m.task_group_count <= tx_count);
             assert!(m.largest_group_size >= 1 && m.largest_group_size <= tx_count);
             assert!(m.independent_tx_count <= tx_count);
+            assert!(m.critical_path_length >= 1 && m.critical_path_length <= tx_count);
+            assert!((0.0..=1.0).contains(&m.dependency_graph_density));
+            assert!(m.critical_path_length * m.max_achievable_parallelism >= tx_count);
             // The BFS component count must agree with `connected_components`.
             assert_eq!(
                 m.task_group_count,
@@ -353,5 +360,23 @@ mod tests {
         assert_eq!(m.max_achievable_parallelism, 4); // all 4 in wave 1
         assert_eq!(m.parallel_speedup_factor, 4.0); // 4/1
         assert_eq!(m.dependency_graph_density, 0.0); // no edges
+    }
+
+    #[test]
+    fn diamond_graph_new_metrics() {
+        let mut g = DepGraph::new(4, 1);
+        add_edge(&mut g, 0, 1);
+        add_edge(&mut g, 0, 2);
+        add_edge(&mut g, 1, 3);
+        add_edge(&mut g, 2, 3);
+        let m = compute_metrics(&g);
+        // levels: 0→1, 1→2, 2→2, 3→3  ⟹  cpl=3
+        assert_eq!(m.critical_path_length, 3);
+        // wave widths: {1:1, 2:2, 3:1}  ⟹  peak=2
+        assert_eq!(m.max_achievable_parallelism, 2);
+        // 4 / 3 ≈ 1.333…
+        assert!((m.parallel_speedup_factor - 4.0 / 3.0).abs() < 1e-10);
+        // edges=4, max_possible=6 → 4/6 ≈ 0.6667
+        assert!((m.dependency_graph_density - 4.0 / 6.0).abs() < 1e-10);
     }
 }
