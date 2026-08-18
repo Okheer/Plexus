@@ -156,6 +156,10 @@ pub fn critical_path_length(graph: &DepGraph) -> usize {
     level.into_iter().max().unwrap_or(0)
 }
 
+/// Calculates peak wave width across all execution levels.
+///
+/// Uses [`compute_topo_levels`] to group transactions into concurrent execution waves
+/// and returns the size of the largest wave.
 pub fn max_achievable_parallelism(graph: &DepGraph) -> usize {
     compute_topo_levels(graph).1
 }
@@ -185,6 +189,7 @@ pub fn dependency_graph_density(graph: &DepGraph) -> f64 {
     graph.edge_count() as f64 / max_edges as f64
 }
 
+/// Single-pass topological DP helper returning `(critical_path_length, max_achievable_parallelism)`.
 fn compute_topo_levels(graph: &DepGraph) -> (usize, usize) {
     if graph.tx_count == 0 {
         return (0, 0);
