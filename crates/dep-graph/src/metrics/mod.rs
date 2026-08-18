@@ -70,7 +70,7 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
             graph.edge_count() as f64 / max_edges as f64
         }
     };
-    
+
     BlockMetrics {
         tx_count,
         independent_tx_count,
@@ -78,10 +78,10 @@ pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
         task_group_count,
         largest_group_size,
         singleton_group_count,
-        critical_path_length:cpl,
+        critical_path_length: cpl,
         max_achievable_parallelism: map,
-        parallel_speedup_factor ,
-        dependency_graph_density ,
+        parallel_speedup_factor,
+        dependency_graph_density,
     }
 }
 
@@ -157,13 +157,12 @@ pub fn critical_path_length(graph: &DepGraph) -> usize {
 }
 
 pub fn max_achievable_parallelism(graph: &DepGraph) -> usize {
-    
     compute_topo_levels(graph).1
 }
 
-fn compute_topo_levels(graph: &DepGraph) -> (usize,usize){
-    if graph.tx_count == 0{
-        return (0,0);
+fn compute_topo_levels(graph: &DepGraph) -> (usize, usize) {
+    if graph.tx_count == 0 {
+        return (0, 0);
     }
 
     let topo = toposort(&graph.graph, None).expect("dependency graph must be acyclic");
@@ -171,24 +170,24 @@ fn compute_topo_levels(graph: &DepGraph) -> (usize,usize){
 
     for node in &topo {
         let pred_max = graph
-                     .graph
-                     .neighbors_directed(*node, Direction::Incoming)
-                     .map(|pred| level[pred.index()])
-                     .max()
-                     .unwrap_or(0);
-         level[node.index()] = pred_max + 1; 
+            .graph
+            .neighbors_directed(*node, Direction::Incoming)
+            .map(|pred| level[pred.index()])
+            .max()
+            .unwrap_or(0);
+        level[node.index()] = pred_max + 1;
     }
 
     let cpl = level.iter().copied().max().unwrap_or(0);
 
     let mut wave_sizes = vec![0usize; cpl + 1];
-    for &l in &level{
+    for &l in &level {
         wave_sizes[l] += 1;
     }
 
     let map = wave_sizes.into_iter().max().unwrap_or(0);
 
-    (cpl,map)
+    (cpl, map)
 }
 
 #[cfg(test)]
@@ -287,9 +286,12 @@ mod tests {
 
             let edge_attempts = next() % (tx_count as u64 * 2 + 1);
             for _ in 0..edge_attempts {
-                let a = (next() as usize) % tx_count;
-                let b = (next() as usize) % tx_count;
+                let mut a = (next() as usize) % tx_count;
+                let mut b = (next() as usize) % tx_count;
                 if a != b {
+                    if a > b {
+                        std::mem::swap(&mut a, &mut b);
+                    }
                     add_edge(&mut g, a, b);
                 }
             }
