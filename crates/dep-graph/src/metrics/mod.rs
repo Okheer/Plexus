@@ -160,6 +160,31 @@ pub fn max_achievable_parallelism(graph: &DepGraph) -> usize {
     compute_topo_levels(graph).1
 }
 
+/// Theoretical transaction-count speedup: `tx_count / critical_path_length`.
+///
+/// Guards: returns `1.0` when `critical_path_length == 0` (empty block).
+pub fn parallel_speedup_factor(graph: &DepGraph) -> f64 {
+    let cpl = compute_topo_levels(graph).0;
+    if cpl == 0 {
+        return 1.0;
+    }
+    graph.tx_count as f64 / cpl as f64
+}
+
+/// Fraction of all possible conflict edges that actually exist.
+///
+/// `density = edge_count / (tx_count * (tx_count - 1) / 2)`
+///
+/// Guards: returns `0.0` when `tx_count < 2` (no pairs possible).
+pub fn dependency_graph_density(graph: &DepGraph) -> f64 {
+    let n = graph.tx_count;
+    if n < 2 {
+        return 0.0;
+    }
+    let max_edges = n * (n - 1) / 2;
+    graph.edge_count() as f64 / max_edges as f64
+}
+
 fn compute_topo_levels(graph: &DepGraph) -> (usize, usize) {
     if graph.tx_count == 0 {
         return (0, 0);
