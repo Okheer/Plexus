@@ -334,4 +334,24 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn empty_block_new_metrics() {
+        let g = DepGraph::new(0, 1);
+        let m = compute_metrics(&g);
+        assert_eq!(m.critical_path_length, 0);
+        assert_eq!(m.max_achievable_parallelism, 0);
+        assert_eq!(m.parallel_speedup_factor, 1.0); // guard: cpl==0
+        assert_eq!(m.dependency_graph_density, 0.0); // guard: tx_count<2
+    }
+
+    #[test]
+    fn fully_parallel_block_new_metrics() {
+        let g = DepGraph::new(4, 1);
+        let m = compute_metrics(&g);
+        assert_eq!(m.critical_path_length, 1); // all at level 1
+        assert_eq!(m.max_achievable_parallelism, 4); // all 4 in wave 1
+        assert_eq!(m.parallel_speedup_factor, 4.0); // 4/1
+        assert_eq!(m.dependency_graph_density, 0.0); // no edges
+    }
 }
