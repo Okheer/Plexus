@@ -1,6 +1,8 @@
 use alloy_eip7928::AccountChanges;
+use alloy_primitives::B256;
 use serde_json::Value;
 
+use crate::bal::commitment::verify_bal_commitment;
 use crate::bal::error::BalError;
 use crate::fetcher::BlockId;
 use crate::rpc::client::RpcClient;
@@ -9,9 +11,19 @@ use crate::rpc::client::RpcClient;
 ///
 /// Reth serves EIP-7928 data as JSON matching the `alloy_eip7928` types, so the
 /// response decodes without a client-specific representation of its own.
+///
+/// Pass the block header's `blockAccessListHash` as `expected` to have the
+/// response checked against the block's commitment. Reth's JSON path does not
+/// carry the bytes the node sent, so that check is over a re-encoding of the
+/// decoded response rather than the wire form — weaker than the raw-bytes check
+/// [`fetch_nethermind_bal`](crate::bal::fetch_nethermind_bal) can do, and the
+/// module docs on [`commitment`](crate::bal::commitment) spell out the
+/// difference. `None` skips verification, for blocks whose header carries no
+/// commitment.
 pub async fn fetch_reth_bal(
     client: &RpcClient,
     block_id: &BlockId,
+    expected: Option<B256>,
 ) -> Result<Vec<AccountChanges>, BalError> {
     let raw: Option<Value> = client
         .request("eth_getBlockAccessList", (block_id.as_rpc_param(),))
@@ -19,13 +31,22 @@ pub async fn fetch_reth_bal(
 
     let raw = raw.ok_or_else(|| BalError::BlockNotFound(block_id.clone()))?;
 
-    serde_json::from_value(raw).map_err(|_| BalError::MalformedResponse {
-        field: "blockAccessList",
-    })
+    let bal: Vec<AccountChanges> =
+        serde_json::from_value(raw).map_err(|_| BalError::MalformedResponse {
+            field: "blockAccessList",
+        })?;
+
+    if let Some(expected) = expected {
+        verify_bal_commitment(&bal, expected)?;
+    }
+
+    Ok(bal)
 }
 
 #[cfg(test)]
 mod tests {
+    use alloy_eip7928::compute_block_access_list_hash;
+
     use super::*;
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -69,7 +90,7 @@ mod tests {
         let server = server_returning(sample_bal_json()).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let bal = fetch_reth_bal(&client, &BlockId::Number(100))
+        let bal = fetch_reth_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap();
 
@@ -83,7 +104,7 @@ mod tests {
         let server = server_returning(serde_json::json!([])).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let bal = fetch_reth_bal(&client, &BlockId::Number(100))
+        let bal = fetch_reth_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap();
 
@@ -95,7 +116,7 @@ mod tests {
         let server = server_returning(Value::Null).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let err = fetch_reth_bal(&client, &BlockId::Number(100))
+        let err = fetch_reth_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap_err();
 
@@ -107,7 +128,7 @@ mod tests {
         let server = server_returning(serde_json::json!([{ "address": "not-an-address" }])).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        let err = fetch_reth_bal(&client, &BlockId::Number(100))
+        let err = fetch_reth_bal(&client, &BlockId::Number(100), None)
             .await
             .unwrap_err();
 
@@ -119,12 +140,42 @@ mod tests {
         ));
     }
 
+    // Verification now lives in the fetch, so these cover it where it runs
+    // rather than only through `fetch_bal`.
+
+    #[tokio::test]
+    async fn bal_matching_the_commitment_is_returned() {
+        let server = server_returning(sample_bal_json()).await;
+        let client = RpcClient::new(server.uri()).unwrap();
+
+        let accounts: Vec<AccountChanges> = serde_json::from_value(sample_bal_json()).unwrap();
+        let expected = compute_block_access_list_hash(&accounts);
+
+        let bal = fetch_reth_bal(&client, &BlockId::Number(100), Some(expected))
+            .await
+            .unwrap();
+
+        assert_eq!(bal, accounts);
+    }
+
+    #[tokio::test]
+    async fn bal_not_matching_the_commitment_is_rejected() {
+        let server = server_returning(sample_bal_json()).await;
+        let client = RpcClient::new(server.uri()).unwrap();
+
+        let err = fetch_reth_bal(&client, &BlockId::Number(100), Some(B256::from([0x11; 32])))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, BalError::BalHashMismatch { .. }));
+    }
+
     #[tokio::test]
     async fn tag_is_passed_through_as_an_rpc_param() {
         let server = server_returning(sample_bal_json()).await;
         let client = RpcClient::new(server.uri()).unwrap();
 
-        fetch_reth_bal(&client, &BlockId::Tag("latest".into()))
+        fetch_reth_bal(&client, &BlockId::Tag("latest".into()), None)
             .await
             .unwrap();
 

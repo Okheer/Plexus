@@ -104,14 +104,13 @@ pub async fn fetch_bal_cached(
 mod tests {
     use super::*;
     use alloy_eip7928::bal::Bal;
+    use alloy_eip7928::compute_block_access_list_hash;
     use alloy_primitives::B256;
     use serde_json::Value;
     use std::fs;
     use tempfile::tempdir;
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
-
-    use crate::bal::bal_commitment_hash;
 
     const BLOCK: u64 = 100;
 
@@ -149,7 +148,7 @@ mod tests {
 
     /// The commitment a block serving `sample_accounts()` would carry.
     fn sample_commitment() -> B256 {
-        bal_commitment_hash(&sample_accounts())
+        compute_block_access_list_hash(&sample_accounts())
     }
 
     /// A block header, optionally committing to a `blockAccessListHash`.

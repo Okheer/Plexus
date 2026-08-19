@@ -13,7 +13,7 @@ pub mod parse;
 pub mod reth;
 
 pub use client_kind::ClientKind;
-pub use commitment::{bal_commitment_hash, verify_bal_commitment, verify_raw_bal_commitment};
+pub use commitment::{verify_bal_commitment, verify_raw_bal_commitment};
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
 pub use nethermind::decode_raw_bal_verified;
@@ -50,13 +50,7 @@ pub async fn fetch_bal(
     expected: Option<B256>,
 ) -> Result<Vec<AccountChanges>, BalError> {
     match kind {
-        ClientKind::Reth => {
-            let bal = fetch_reth_bal(client, block_id).await?;
-            if let Some(expected) = expected {
-                verify_bal_commitment(&bal, expected)?;
-            }
-            Ok(bal)
-        }
+        ClientKind::Reth => fetch_reth_bal(client, block_id, expected).await,
         ClientKind::Nethermind => fetch_nethermind_bal(client, block_id, expected).await,
     }
 }
@@ -188,7 +182,7 @@ mod e2e_tests {
         let client = RpcClient::new(server.uri()).unwrap();
         let ctx = two_tx_ctx();
 
-        let bal = fetch_reth_bal(&client, &BlockId::Number(ctx.number))
+        let bal = fetch_reth_bal(&client, &BlockId::Number(ctx.number), None)
             .await
             .unwrap();
         let out = normalize_bal(&bal, &ctx).unwrap();
@@ -242,7 +236,7 @@ mod e2e_tests {
 mod agreement_tests {
     use alloy_eip7928::{bal::Bal, AccountChanges};
 
-    use super::nethermind::decode_raw_bal;
+    use super::nethermind::decode_raw_bal_verified;
 
     fn sample() -> serde_json::Value {
         serde_json::json!([
@@ -278,7 +272,7 @@ mod agreement_tests {
 
         let rlp = alloy_rlp::encode(Bal::from(via_reth.clone()));
         let raw_hex = format!("0x{}", hex::encode(rlp));
-        let via_nethermind = decode_raw_bal(&raw_hex).unwrap();
+        let via_nethermind = decode_raw_bal_verified(&raw_hex, None).unwrap();
 
         assert_eq!(via_reth, via_nethermind);
     }

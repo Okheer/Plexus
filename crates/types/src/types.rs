@@ -139,9 +139,9 @@ pub struct BlockContext {
     /// field, so its absence is not an error — it only means the fetched BAL
     /// can't be checked against a commitment.
     ///
-    /// `#[serde(default)]` keeps `block_header.json` files cached before this
-    /// field existed readable, rather than failing to parse and forcing a refetch.
-    #[serde(default)]
+    /// Being an `Option` is what keeps `block_header.json` files cached before
+    /// this field existed readable: serde deserializes a missing field as `None`
+    /// rather than failing to parse and forcing a refetch.
     pub block_access_list_hash: Option<B256>,
 }
 

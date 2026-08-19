@@ -25,31 +25,28 @@
 //!
 //! `raw_and_decoded_hashes_agree` in this module's tests is what justifies
 //! treating the two as interchangeable for canonically-encoded input.
+//!
+//! An empty BAL needs no special-casing: RLP-encoding an empty list yields
+//! `0xc0`, so it hashes to the spec's `EMPTY_BLOCK_ACCESS_LIST_HASH` sentinel
+//! (`0x1dcc4de8…`) on its own. `empty_bal_matches_the_sentinel_observed_on_a_real_node`
+//! pins that against a value read off a real node.
 
 use alloy_eip7928::{compute_block_access_list_hash, AccountChanges};
 use alloy_primitives::{keccak256, B256};
 
 use crate::bal::error::BalError;
 
-/// Computes the `blockAccessListHash` a decoded BAL commits to.
-///
-/// This RLP-encodes `bal` and hashes the result, so it reproduces the header's
-/// commitment only for a canonically-encoded access list — see the module docs.
-/// An empty BAL hashes to the spec's `EMPTY_BLOCK_ACCESS_LIST_HASH` sentinel
-/// (`0x1dcc4de8…`) without any special-casing, because RLP-encoding an empty
-/// list yields `0xc0`.
-pub fn bal_commitment_hash(bal: &[AccountChanges]) -> B256 {
-    compute_block_access_list_hash(bal)
-}
-
 /// Checks a decoded BAL against the block's committed `blockAccessListHash`.
+///
+/// The BAL is RLP-encoded and hashed, so this reproduces the header's
+/// commitment only for a canonically-encoded access list — see the module docs.
 ///
 /// # Errors
 ///
 /// Returns [`BalError::BalHashMismatch`] carrying both hashes if the BAL does
 /// not match `expected`.
 pub fn verify_bal_commitment(bal: &[AccountChanges], expected: B256) -> Result<(), BalError> {
-    ensure_hash(bal_commitment_hash(bal), expected)
+    ensure_hash(compute_block_access_list_hash(bal), expected)
 }
 
 /// Checks raw RLP bytes, as received from the node, against the block's
@@ -123,7 +120,7 @@ mod tests {
     #[test]
     fn matching_bal_passes_verification() {
         let bal = sample_bal();
-        let committed = bal_commitment_hash(&bal);
+        let committed = compute_block_access_list_hash(&bal);
 
         assert!(verify_bal_commitment(&bal, committed).is_ok());
     }
@@ -145,7 +142,10 @@ mod tests {
     fn raw_and_decoded_hashes_agree() {
         let bal = sample_bal();
 
-        assert_eq!(bal_commitment_hash(&bal), keccak256(raw_rlp(&bal)));
+        assert_eq!(
+            compute_block_access_list_hash(&bal),
+            keccak256(raw_rlp(&bal))
+        );
     }
 
     // ── the corrupted / mismatched case ──────────────────────────────────────
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn mutated_storage_value_is_caught() {
         let bal = sample_bal();
-        let committed = bal_commitment_hash(&bal);
+        let committed = compute_block_access_list_hash(&bal);
 
         let mut tampered = bal.clone();
         tampered[1].storage_changes[0].changes[0].new_value = U256::from(0xdead_u64);
@@ -200,11 +200,11 @@ mod tests {
                 expected: got,
             } => {
                 assert_eq!(got, expected);
-                assert_eq!(computed, bal_commitment_hash(&bal));
+                assert_eq!(computed, compute_block_access_list_hash(&bal));
             }
             other => panic!("expected BalHashMismatch, got {other:?}"),
         }
-        assert!(msg.contains(&bal_commitment_hash(&bal).to_string()));
+        assert!(msg.contains(&compute_block_access_list_hash(&bal).to_string()));
         assert!(msg.contains(&expected.to_string()));
     }
 
@@ -224,7 +224,7 @@ mod tests {
         // no special-casing: RLP-encoding an empty list gives 0xc0, and the
         // sentinel is simply its hash
         assert_eq!(raw_rlp(&[]), vec![0xc0]);
-        assert_eq!(bal_commitment_hash(&[]), OBSERVED_EMPTY_BAL_HASH);
+        assert_eq!(compute_block_access_list_hash(&[]), OBSERVED_EMPTY_BAL_HASH);
         assert_eq!(EMPTY_BLOCK_ACCESS_LIST_HASH, OBSERVED_EMPTY_BAL_HASH);
     }
 }

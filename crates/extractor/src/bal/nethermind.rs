@@ -40,15 +40,11 @@ pub async fn fetch_nethermind_bal(
     decode_raw_bal_verified(&raw, expected)
 }
 
-/// Decodes a `0x`-prefixed raw RLP block access list into its account changes.
+/// Decodes a `0x`-prefixed raw RLP block access list, first checking it against
+/// a block commitment. Pass `None` for `expected` to decode without verifying.
 ///
 /// Split out from the fetch so the RLP decoding can be tested without a node and
 /// reused wherever raw BAL bytes need decoding. The `0x` prefix is optional.
-pub fn decode_raw_bal(raw_hex: &str) -> Result<Vec<AccountChanges>, BalError> {
-    decode_raw_bal_verified(raw_hex, None)
-}
-
-/// Decodes raw RLP BAL hex, first checking it against a block commitment.
 ///
 /// Verification runs on the raw bytes *before* decoding, so a BAL belonging to
 /// another block is rejected as a mismatch rather than surfacing as whatever
