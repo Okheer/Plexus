@@ -2,6 +2,8 @@ use crate::cache::{config::CacheConfig, io, CacheError};
 use crate::rpc::client::RpcClient;
 use crate::traces::error::{TraceError, TraceTaskError};
 use alloy_primitives::B256;
+use futures::FutureExt;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 use types::types::BlockContext;
@@ -12,15 +14,25 @@ pub struct TraceFetchSummary {
     pub cache_hits: Vec<B256>,
     pub fetched: Vec<B256>,
     pub failed: Vec<(B256, TraceTaskError)>,
+    pub cancelled: usize,
 }
 
 impl TraceFetchSummary {
     pub fn total(&self) -> usize {
-        self.cache_hits.len() + self.fetched.len() + self.failed.len()
+        self.cache_hits.len() + self.fetched.len() + self.failed.len() + self.cancelled
     }
 
     pub fn is_complete(&self) -> bool {
-        self.failed.is_empty()
+        self.failed.is_empty() && self.cancelled == 0
+    }
+}
+
+async fn catch_task_panic(
+    body: impl Future<Output = Result<(), TraceTaskError>>,
+) -> Result<(), TraceTaskError> {
+    match std::panic::AssertUnwindSafe(body).catch_unwind().await {
+        Ok(result) => result,
+        Err(_payload) => Err(TraceTaskError::TaskPanicked),
     }
 }
 
@@ -54,7 +66,7 @@ async fn fetch_and_write_traces(
     chain_id: u64,
     block_number: u64,
     to_fetch: Vec<B256>,
-) -> (Vec<B256>, Vec<(B256, TraceTaskError)>) {
+) -> (Vec<B256>, Vec<(B256, TraceTaskError)>, usize) {
     let mut set: JoinSet<(B256, Result<(), TraceTaskError>)> = JoinSet::new();
 
     let tracer_cfg = Arc::new(serde_json::json!({
@@ -69,27 +81,29 @@ async fn fetch_and_write_traces(
         let tracer_cfg = tracer_cfg.clone();
 
         set.spawn(async move {
-            let hex_hash = format!("0x{}", hex::encode(hash));
+            let result = catch_task_panic(async move {
+                let hex_hash = format!("0x{}", hex::encode(hash));
 
-            let trace_result: Result<serde_json::Value, _> = client
-                .request("debug_traceTransaction", (hex_hash, tracer_cfg))
-                .await;
+                let trace_result: Result<serde_json::Value, _> = client
+                    .request("debug_traceTransaction", (hex_hash, tracer_cfg))
+                    .await;
 
-            let trace = match trace_result {
-                Ok(t) => t,
-                Err(e) => return (hash, Err(TraceTaskError::from(e))),
-            };
+                let trace = trace_result.map_err(TraceTaskError::from)?;
 
-            let path = cache.tx_path(chain_id, block_number, &hash);
-            match io::write_json(&path, &trace) {
-                Ok(()) => (hash, Ok(())),
-                Err(e) => (hash, Err(TraceTaskError::from(e))),
-            }
+                let path = cache.tx_path(chain_id, block_number, &hash);
+                io::write_json(&path, &trace).map_err(TraceTaskError::from)?;
+
+                Ok(())
+            })
+            .await;
+
+            (hash, result)
         });
     }
 
     let mut fetched = Vec::new();
     let mut failed = Vec::new();
+    let mut cancelled = 0;
     while let Some(result) = set.join_next().await {
         match result {
             Ok((hash, Ok(()))) => {
@@ -101,6 +115,7 @@ async fn fetch_and_write_traces(
                 failed.push((hash, reason));
             }
             Err(join_err) => {
+                cancelled += 1;
                 tracing::error!(
                     %join_err,
                     "a trace fetch task panicked or was cancelled"
@@ -108,7 +123,7 @@ async fn fetch_and_write_traces(
             }
         }
     }
-    (fetched, failed)
+    (fetched, failed, cancelled)
 }
 
 /// Fetches and caches prestate traces for every txn in a block
@@ -153,7 +168,7 @@ pub async fn populate_traces(
     );
 
     // fetch missing tx_hash
-    let (fetched, failed) =
+    let (fetched, failed, cancelled) =
         fetch_and_write_traces(client, cache, chain_id, block_number, to_fetch).await;
 
     let summary = TraceFetchSummary {
@@ -161,6 +176,7 @@ pub async fn populate_traces(
         cache_hits,
         fetched,
         failed,
+        cancelled,
     };
 
     tracing::info!(
@@ -168,6 +184,7 @@ pub async fn populate_traces(
         hits = summary.cache_hits.len(),
         fetched = summary.fetched.len(),
         failed = summary.failed.len(),
+        cancelled = summary.cancelled,
         "trace population complete"
     );
     Ok(summary)
@@ -278,7 +295,7 @@ mod tests {
         let client = Arc::new(RpcClient::new(mock_server.uri()).unwrap());
         let cache = Arc::new(CacheConfig::with_root(temp_dir.path().to_path_buf()));
 
-        let (_fetched, _failed) =
+        let (_fetched, _failed, _cancelled) =
             fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
 
         //checking if the cache are being writte on disc
@@ -310,12 +327,13 @@ mod tests {
         let hash_b = B256::from([0xBB; 32]);
         let hash_c = B256::from([0xCC; 32]);
 
-        let (fetched, failed) =
+        let (fetched, failed, cancelled) =
             fetch_and_write_traces(client, cache.clone(), 1, 100, vec![hash_a, hash_b, hash_c])
                 .await;
         // One failed, two succeeded — batch was NOT aborted
         assert_eq!(fetched.len(), 2);
         assert_eq!(failed.len(), 1);
+        assert_eq!(cancelled, 0);
 
         let files_on_disk = [hash_a, hash_b, hash_c]
             .iter()
@@ -426,15 +444,66 @@ mod tests {
         set_permissions(&block_dir, perms).unwrap();
 
         // Run the inner fetch-and-write function directly
-        let (fetched, failed) =
+        let (fetched, failed, cancelled) =
             fetch_and_write_traces(client, cache.clone(), chain_id, block_number, to_fetch).await;
 
         assert!(fetched.is_empty());
         assert_eq!(failed.len(), 1);
+        assert_eq!(cancelled, 0);
 
         // Prove exactly WHY it failed using the new TraceTaskError enum
         let (failed_hash, error_reason) = &failed[0];
         assert_eq!(failed_hash, &hash);
         assert!(matches!(error_reason, TraceTaskError::CacheWrite { .. }));
+    }
+
+    #[tokio::test]
+    async fn catch_task_panic_converts_panic_into_task_panicked_error() {
+        let result = catch_task_panic(async { panic!("boom") }).await;
+
+        assert!(matches!(result, Err(TraceTaskError::TaskPanicked)));
+    }
+
+    #[tokio::test]
+    async fn catch_task_panic_preserves_successful_result() {
+        let result = catch_task_panic(async { Ok(()) }).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn catch_task_panic_preserves_regular_error() {
+        let err = CacheError::NotFound(std::path::PathBuf::from("/nope"));
+        let result = catch_task_panic(async move { Err(TraceTaskError::from(err)) }).await;
+
+        assert!(matches!(result, Err(TraceTaskError::CacheWrite { .. })));
+    }
+
+    #[test]
+    fn summary_counts_cancelled_as_incomplete() {
+        let summary = TraceFetchSummary {
+            block_number: 1,
+            cache_hits: vec![B256::from([0x11; 32])],
+            fetched: vec![B256::from([0x22; 32])],
+            failed: vec![],
+            cancelled: 1,
+        };
+
+        assert_eq!(summary.total(), 3);
+        assert!(!summary.is_complete());
+    }
+
+    #[test]
+    fn summary_with_cancelled_and_failed_is_incomplete() {
+        let summary = TraceFetchSummary {
+            block_number: 1,
+            cache_hits: vec![],
+            fetched: vec![B256::from([0x22; 32])],
+            failed: vec![(B256::from([0x33; 32]), TraceTaskError::TaskPanicked)],
+            cancelled: 1,
+        };
+
+        assert_eq!(summary.total(), 3);
+        assert!(!summary.is_complete());
     }
 }
