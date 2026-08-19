@@ -365,6 +365,7 @@ mod tests {
             gas_limit: 30000000,
             gas_used: 15000000,
             tx_hashes: vec![hash_1, hash_2],
+            block_access_list_hash: None,
         };
         io::write_json(&cache.block_header_path(chain_id, block_number), &block_ctx).unwrap();
 

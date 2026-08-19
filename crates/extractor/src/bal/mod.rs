@@ -4,6 +4,7 @@
 //! `alloy_eip7928` types, so only the fetch path is client-specific.
 
 pub mod client_kind;
+pub mod commitment;
 pub mod error;
 pub mod index;
 pub mod nethermind;
@@ -12,14 +13,17 @@ pub mod parse;
 pub mod reth;
 
 pub use client_kind::ClientKind;
+pub use commitment::{verify_bal_commitment, verify_raw_bal_commitment};
 pub use error::BalError;
 pub use index::{classify_block_access_index, BlockAccessIndexRole};
+pub use nethermind::decode_raw_bal_verified;
 pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
 pub use parse::parse_bal;
 pub use reth::fetch_reth_bal;
 
 use alloy_eip7928::AccountChanges;
+use alloy_primitives::B256;
 
 use crate::fetcher::BlockId;
 use crate::rpc::client::RpcClient;
@@ -30,14 +34,24 @@ use crate::rpc::client::RpcClient;
 /// encodings, but both decode into the same `Vec<AccountChanges>`, so this is
 /// the single client-agnostic entry point callers (and the cache layer in
 /// [`fetch_bal_cached`](crate::fetcher::fetch_bal_cached)) use.
+///
+/// `expected` is the block header's `blockAccessListHash`. When it's `Some`, the
+/// response is checked against that commitment and a mismatch is an error, so no
+/// caller can use a BAL that isn't the one the block committed to. `None` skips
+/// the check, for blocks whose header carries no commitment.
+///
+/// Both clients are verified, but not equally: Nethermind's raw-RLP path checks
+/// the bytes the node sent, while Reth's JSON path can only check a re-encoding
+/// of the decoded response. See [`commitment`] for what that distinction costs.
 pub async fn fetch_bal(
     client: &RpcClient,
     kind: ClientKind,
     block_id: &BlockId,
+    expected: Option<B256>,
 ) -> Result<Vec<AccountChanges>, BalError> {
     match kind {
-        ClientKind::Reth => fetch_reth_bal(client, block_id).await,
-        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id).await,
+        ClientKind::Reth => fetch_reth_bal(client, block_id, expected).await,
+        ClientKind::Nethermind => fetch_nethermind_bal(client, block_id, expected).await,
     }
 }
 
@@ -141,6 +155,7 @@ mod e2e_tests {
             gas_limit: 30_000_000,
             gas_used: 100_000,
             tx_hashes: vec![B256::from([0x11; 32]), B256::from([0x22; 32])],
+            block_access_list_hash: None,
         }
     }
 
@@ -167,7 +182,7 @@ mod e2e_tests {
         let client = RpcClient::new(server.uri()).unwrap();
         let ctx = two_tx_ctx();
 
-        let bal = fetch_reth_bal(&client, &BlockId::Number(ctx.number))
+        let bal = fetch_reth_bal(&client, &BlockId::Number(ctx.number), None)
             .await
             .unwrap();
         let out = normalize_bal(&bal, &ctx).unwrap();
@@ -221,7 +236,7 @@ mod e2e_tests {
 mod agreement_tests {
     use alloy_eip7928::{bal::Bal, AccountChanges};
 
-    use super::nethermind::decode_raw_bal;
+    use super::nethermind::decode_raw_bal_verified;
 
     fn sample() -> serde_json::Value {
         serde_json::json!([
@@ -257,7 +272,7 @@ mod agreement_tests {
 
         let rlp = alloy_rlp::encode(Bal::from(via_reth.clone()));
         let raw_hex = format!("0x{}", hex::encode(rlp));
-        let via_nethermind = decode_raw_bal(&raw_hex).unwrap();
+        let via_nethermind = decode_raw_bal_verified(&raw_hex, None).unwrap();
 
         assert_eq!(via_reth, via_nethermind);
     }

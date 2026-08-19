@@ -10,6 +10,7 @@
 //!
 //! Optionally pin a block with `PLEXUS_BLOCK=0x1234` (defaults to `latest`).
 
+use alloy_eip7928::compute_block_access_list_hash;
 use parser::bal::{fetch_reth_bal, normalize_bal};
 use parser::cache::config::CacheConfig;
 use parser::fetcher::{fetch_block_metadata, BlockId};
@@ -44,10 +45,29 @@ async fn live_fetch_and_normalize() {
         ctx.tx_hashes.len()
     );
 
-    let bal = fetch_reth_bal(&client, &BlockId::Number(ctx.number))
-        .await
-        .expect("failed to fetch BAL — a -32601 here means the method name is wrong");
+    // Passing the header's commitment makes the fetch itself reject a BAL that
+    // isn't this block's. The unit tests verify against a commitment we computed
+    // ourselves; this is the only place a real node's header hash checks a real
+    // node's BAL. A BalHashMismatch here renders both hashes in its message.
+    let bal = fetch_reth_bal(
+        &client,
+        &BlockId::Number(ctx.number),
+        ctx.block_access_list_hash,
+    )
+    .await
+    .expect("failed to fetch BAL — a -32601 here means the method name is wrong");
     println!("BAL covers {} accounts", bal.len());
+
+    match ctx.block_access_list_hash {
+        Some(expected) => {
+            println!("header commits to {expected}");
+            println!("BAL hashes to     {}", compute_block_access_list_hash(&bal));
+            println!("commitment verified");
+        }
+        // gloas_fork_epoch is almost certainly unset on the devnet — see the
+        // Kurtosis findings in the BAL research notes
+        None => println!("header carries no blockAccessListHash; skipping verification"),
+    }
 
     let out = normalize_bal(&bal, &ctx).expect("failed to normalize BAL");
 

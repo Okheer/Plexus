@@ -1,8 +1,9 @@
+use alloy_primitives::{Address, B256, U256};
+use thiserror::Error;
+
 use crate::cache::CacheError;
 use crate::fetcher::{BlockId, FetchError};
 use crate::rpc::RpcError;
-use alloy_primitives::{Address, U256};
-use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum BalError {
@@ -33,6 +34,13 @@ pub enum BalError {
 
     #[error("unsupported client '{name}', expected one of: reth, nethermind")]
     UnsupportedClient { name: String },
+
+    /// The fetched BAL does not hash to the `blockAccessListHash` the block
+    /// header commits to, so it is not the access list for that block. A bad
+    /// fetch, a corrupt cache entry, or a client bug all land here, and none of
+    /// them are safe to pass downstream.
+    #[error("block access list hash mismatch: computed {computed}, header commits to {expected}")]
+    BalHashMismatch { computed: B256, expected: B256 },
 
     #[error("malformed bal: slot {slot} on address {address} appears in both storage_reads and storage_changes")]
     DisjointnessViolation { address: Address, slot: U256 },
