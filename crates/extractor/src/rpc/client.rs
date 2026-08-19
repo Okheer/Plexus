@@ -24,9 +24,7 @@ impl RpcClient {
         Self::with_config(ClientConfig::new(&url_str))
     }
 
-    // builds the config then hands it over. returns an error on a bad url so the
-    // caller gets to decide whether to bail
-    fn with_config(client_config: ClientConfig) -> Result<Self> {
+    pub fn with_config(client_config: ClientConfig) -> Result<Self> {
         let url = Url::parse(&client_config.url).map_err(|e| RpcError::InvalidUrl {
             url: client_config.url.clone(),
             method: e.to_string(),
@@ -71,6 +69,7 @@ mod tests {
     use crate::rpc::error::RpcError;
     use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering::SeqCst};
     use std::time::{Duration, Instant};
+    use tokio::time::sleep;
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -213,11 +212,7 @@ mod tests {
         let start = Instant::now();
         let out: Result<String> = client.unwrap().request("eth_blockNumber", ()).await;
         assert_eq!(out.unwrap(), "0x10");
-        assert!(
-            start.elapsed() >= Duration::from_secs(1),
-            "waited only {:?}",
-            start.elapsed()
-        );
+        assert!(start.elapsed() >= Duration::from_secs(1));
     }
 
     // concurrency cap: in-flight requests at the server never exceed the permit count (10)
@@ -237,7 +232,7 @@ mod tests {
                 // the decrement happens before the client receives the response
                 // and releases its permit, preventing a race condition where
                 // max in-flight erroneously climbs to 11.
-                tokio::time::sleep(delay.saturating_sub(Duration::from_millis(50))).await;
+                sleep(delay.saturating_sub(Duration::from_millis(50))).await;
                 inf.fetch_sub(1, SeqCst);
             });
             ResponseTemplate::new(200)
@@ -271,10 +266,6 @@ mod tests {
         for h in handles {
             assert_eq!(h.await.unwrap(), "0x10");
         }
-        assert!(
-            max.load(SeqCst) <= 10,
-            "max in-flight was {}",
-            max.load(SeqCst)
-        );
+        assert!(max.load(SeqCst) <= 10);
     }
 }

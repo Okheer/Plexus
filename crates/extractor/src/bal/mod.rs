@@ -9,6 +9,7 @@ pub mod error;
 pub mod index;
 pub mod nethermind;
 pub mod normalize;
+pub mod parse;
 pub mod reth;
 
 pub use client_kind::ClientKind;
@@ -18,6 +19,7 @@ pub use index::{classify_block_access_index, BlockAccessIndexRole};
 pub use nethermind::decode_raw_bal_verified;
 pub use nethermind::fetch_nethermind_bal;
 pub use normalize::{normalize_bal, BlockAccessSets};
+pub use parse::parse_bal;
 pub use reth::fetch_reth_bal;
 
 use alloy_eip7928::AccountChanges;

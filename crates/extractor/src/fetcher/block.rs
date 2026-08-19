@@ -1,5 +1,7 @@
 use alloy_primitives::{Address, B256};
 use serde_json::Value;
+use std::num::ParseIntError;
+use std::result;
 use std::str::FromStr;
 
 use super::error::FetchError;
@@ -24,7 +26,7 @@ impl BlockId {
     }
 }
 
-type Result<T> = std::result::Result<T, FetchError>;
+type Result<T> = result::Result<T, FetchError>;
 
 async fn raw_get_block_by_number(client: &RpcClient, block_id: &BlockId) -> Result<Value> {
     let raw: Option<Value> = client
@@ -90,7 +92,7 @@ fn extract_address(raw: &Value, field: &'static str) -> Result<Address> {
     Address::from_str(s).map_err(|_| FetchError::MalformedResponse { field })
 }
 
-fn parse_hex_u64(s: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+fn parse_hex_u64(s: &str) -> result::Result<u64, ParseIntError> {
     u64::from_str_radix(s.trim_start_matches("0x"), 16)
 }
 
@@ -190,6 +192,7 @@ pub async fn fetch_block_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -394,8 +397,8 @@ mod tests {
         let cache = CacheConfig::with_root(dir.path().to_path_buf());
 
         let path = cache.block_header_path(1, 100);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"not valid json").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not valid json").unwrap();
 
         let ctx = fetch_block_metadata(&client, &cache, 1, BlockId::Number(100))
             .await
@@ -403,7 +406,7 @@ mod tests {
 
         assert_eq!(ctx.number, 100);
         let refreshed: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(refreshed["number"], 100);
     }
 

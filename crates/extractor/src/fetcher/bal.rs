@@ -106,6 +106,7 @@ mod tests {
     use alloy_eip7928::bal::Bal;
     use alloy_primitives::B256;
     use serde_json::Value;
+    use std::fs;
     use tempfile::tempdir;
     use wiremock::matchers::method as http_method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -250,8 +251,8 @@ mod tests {
         let (_dir, cache) = tmp_cache();
 
         let path = cache.bal_path(1, BLOCK);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"not valid json").unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not valid json").unwrap();
 
         let bal = fetch_bal_cached(&client, &cache, 1, ClientKind::Reth, BlockId::Number(BLOCK))
             .await

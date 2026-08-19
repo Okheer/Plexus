@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use alloy_eip7928::{AccountChanges, BlockAccessIndex};
 use alloy_primitives::{Address, B256, U256};
@@ -106,6 +107,7 @@ pub fn normalize_bal(
         }
     }
 
+    let reads = Arc::new(reads);
     let txs = writes
         .txs
         .into_iter()
@@ -113,7 +115,7 @@ pub fn normalize_bal(
         .map(|(tx_index, writes)| AccessSet {
             tx_index,
             tx_hash: ctx.tx_hashes[tx_index],
-            reads: ReadAttribution::BlockLevel(reads.clone()),
+            reads: ReadAttribution::BlockLevel(Arc::clone(&reads)),
             writes,
         })
         .collect();

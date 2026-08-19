@@ -1,5 +1,6 @@
 use crate::cache::{config::CacheConfig, error::CacheError, io::read_json};
 use alloy_primitives::B256;
+use serde_json::Value;
 use std::path::PathBuf;
 use types::types::BlockContext;
 
@@ -35,11 +36,11 @@ impl CacheVerificationReport {
 
 /// Checks that a decoded trace file has the expected top-level shape produced
 /// by `prestateTracer` in diff mode: both `pre` and `post` present and non-null.
-fn validate_trace_shape(value: &serde_json::Value) -> Result<(), String> {
+fn validate_trace_shape(value: &Value) -> Result<(), String> {
     for key in ["pre", "post"] {
         match value.get(key) {
             None => return Err(format!("missing required top-level key '{key}'")),
-            Some(serde_json::Value::Null) => return Err(format!("top-level key '{key}' is null")),
+            Some(Value::Null) => return Err(format!("top-level key '{key}' is null")),
             Some(_) => {}
         }
     }
@@ -105,7 +106,7 @@ pub fn verify_block_cache(
 
     for hash in &block_ctx.tx_hashes {
         let path = cache.tx_path(chain_id, block_number, hash);
-        match read_json::<serde_json::Value>(&path) {
+        match read_json::<Value>(&path) {
             Ok(value) => match validate_trace_shape(&value) {
                 Ok(()) => verified.push(*hash),
                 Err(reason) => corrupted.push((*hash, path, reason)),

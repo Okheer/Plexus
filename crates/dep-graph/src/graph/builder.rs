@@ -104,6 +104,7 @@ mod tests {
     use crate::metrics::independence_coefficient;
     use alloy_primitives::B256;
     use petgraph::visit::EdgeRef;
+    use std::sync::Arc;
 
     fn addr(byte: u8) -> Address {
         Address::from([byte; 20])
@@ -152,7 +153,7 @@ mod tests {
             types::types::ReadAttribution::PerTransaction(keys(items))
         }
         fn block(items: Vec<StateKey>) -> types::types::ReadAttribution {
-            types::types::ReadAttribution::BlockLevel(keys(items))
+            types::types::ReadAttribution::BlockLevel(Arc::new(keys(items)))
         }
     }
 
@@ -284,7 +285,7 @@ mod tests {
             access_bal(1, vec![], vec![key()]),
         ];
         let g_bal = build_graph(&bal_sets, &ctx(2)).unwrap();
-        assert_eq!(g_bal.edge_count(), 0, "BAL reads must not create WAR edges");
+        assert_eq!(g_bal.edge_count(), 0);
 
         // Exact mode: identical topology → exactly one WAR edge 0 → 1.
         let exact_sets = vec![
@@ -331,11 +332,7 @@ mod tests {
         ];
 
         let g = build_graph(&sets, &ctx(2)).unwrap();
-        assert_eq!(
-            g.edge_count(),
-            1,
-            "three overlapping keys must collapse to one edge"
-        );
+        assert_eq!(g.edge_count(), 1);
     }
 
     #[test]

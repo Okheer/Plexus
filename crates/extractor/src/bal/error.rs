@@ -1,4 +1,4 @@
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256, U256};
 use thiserror::Error;
 
 use crate::cache::CacheError;
@@ -41,6 +41,21 @@ pub enum BalError {
     /// them are safe to pass downstream.
     #[error("block access list hash mismatch: computed {computed}, header commits to {expected}")]
     BalHashMismatch { computed: B256, expected: B256 },
+
+    #[error("malformed bal: slot {slot} on address {address} appears in both storage_reads and storage_changes")]
+    DisjointnessViolation { address: Address, slot: U256 },
+
+    #[error("index {index} not fitting in a uint32 as per EIP")]
+    IndexTooLarge { index: u64 },
+
+    #[error(
+        "BAL with item count being {item_count} is too large, max items - {max_items}, gas limit being {gas_limit}"
+    )]
+    BlockAccessListTooLarge {
+        item_count: u64,
+        max_items: u64,
+        gas_limit: u64,
+    },
 }
 
 /// Resolving a block tag to a number during a cached BAL fetch goes through the
