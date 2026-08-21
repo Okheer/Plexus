@@ -30,4 +30,6 @@ pub enum TraceTaskError {
         #[from] // Automatically converts CacheError into this variant!
         source: CacheError,
     },
+    #[error("trace task panicked while being polled")]
+    TaskPanicked,
 }
