@@ -25,6 +25,18 @@ pub fn independence_coefficient(graph: &DepGraph) -> f64 {
     independent as f64 / graph.tx_count as f64
 }
 
+pub fn gas_utilisation_ratio(ctx: &BlockContext) -> f64 {
+    if ctx.gas_limit == 0 {
+        return 0.0;
+    }
+
+    ctx.gas_used as f64/ ctx.gas_limit as f64
+}
+
+pub fn eth_burned_wei(ctx: &BlockContext)-> u128 {
+    ctx.base_fee_per_gas.unwrap_or(0)*ctx.gas_used as u128
+}
+
 /// Compute the full set of [`BlockMetrics`] for a dependency graph.
 pub fn compute_metrics(graph: &DepGraph) -> BlockMetrics {
     let tx_count = graph.tx_count;
