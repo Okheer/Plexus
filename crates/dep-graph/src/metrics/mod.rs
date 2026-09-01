@@ -4,6 +4,7 @@
 use crate::graph::DepGraph;
 use alloy_primitives::Address;
 use petgraph::algo::connected_components;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 use types::types::{AccessSet, BlockAccess, BlockContext, StateKey};
 
@@ -54,6 +55,100 @@ pub fn unique_accounts_touched(block: &BlockAccess) -> usize {
     accounts.extend(block.writes.iter().map(|write| write.key.address()));
 
     accounts.len()
+}
+
+
+/// Number of distinct storage slots read or written anywhere in the block.
+///
+/// Block-level reads and all write-log positions, including system writes, are
+/// included. Balance, nonce, and code keys are excluded.
+pub fn unique_storage_slots_touched(block: &BlockAccess) -> usize {
+    let mut slots = HashSet::new();
+
+    for key in block.reads() {
+        if let StateKey::StorageSlot {address,slot} = key{
+            slots.insert((*address,*slot));
+        }
+    }
+
+    slots.len()
+}
+
+fn storage_slot_order(left: &StateKey, right: &StateKey) -> Ordering {
+    match (left, right) {
+        (
+            StateKey::StorageSlot {
+                address: left_address,
+                slot: left_slot,
+            },
+            StateKey::StorageSlot {
+                address: right_address,
+                slot: right_slot,
+            },
+        ) => left_address
+            .as_slice()
+            .cmp(right_address.as_slice())
+            .then_with(|| left_slot.as_slice().cmp(right_slot.as_slice())),
+        _ => Ordering::Equal,
+    }
+}
+
+/// Storage slots ranked by the number of distinct transactions that wrote them.
+pub fn hot_slots(
+    access_sets: &[AccessSet],
+    ctx: &BlockContext,
+    top_k: usize,
+) -> Vec<(StateKey, usize)> {
+    if top_k == 0 || access_sets.is_empty() {
+        return Vec::new();
+    }
+
+    let mut writer_counts: HashMap<StateKey, usize> = HashMap::new();
+
+    for access_set in access_sets {
+        for key in &access_set.writes {
+            if matches!(key, StateKey::StorageSlot { .. })
+                && key.address() != ctx.coinbase
+            {
+                *writer_counts.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let mut ranked: Vec<(StateKey, usize)> = writer_counts.into_iter().collect();
+
+    ranked.sort_by(|(left_key, left_count), (right_key, right_count)| {
+        right_count
+            .cmp(left_count)
+            .then_with(|| storage_slot_order(left_key, right_key))
+    });
+
+    ranked.truncate(top_k);
+    ranked
+}
+
+/// Fraction of unique written storage slots written by at least two transactions.
+pub fn multi_writer_slot_ratio(access_sets: &[AccessSet]) -> f64 {
+    let mut writer_counts: HashMap<StateKey, usize> = HashMap::new();
+
+    for access_set in access_sets {
+        for key in &access_set.writes {
+            if matches!(key, StateKey::StorageSlot { .. }) {
+                *writer_counts.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    if writer_counts.is_empty() {
+        return 0.0;
+    }
+
+    let multi_writer_slots = writer_counts
+        .values()
+        .filter(|&&writer_count| writer_count >= 2)
+        .count();
+
+    multi_writer_slots as f64 / writer_counts.len() as f64
 }
 
 /// Compute the full set of [`BlockMetrics`] for a dependency graph.
