@@ -2,8 +2,10 @@
 //! task-group (weakly connected component) statistics.
 
 use crate::graph::DepGraph;
+use alloy_primitives::Address;
 use petgraph::algo::connected_components;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
+use types::types::{AccessSet, BlockAccess, BlockContext, StateKey};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BlockMetrics {
@@ -30,11 +32,28 @@ pub fn gas_utilisation_ratio(ctx: &BlockContext) -> f64 {
         return 0.0;
     }
 
-    ctx.gas_used as f64/ ctx.gas_limit as f64
+    ctx.gas_used as f64 / ctx.gas_limit as f64
 }
 
-pub fn eth_burned_wei(ctx: &BlockContext)-> u128 {
-    ctx.base_fee_per_gas.unwrap_or(0)*ctx.gas_used as u128
+pub fn eth_burned_wei(ctx: &BlockContext) -> u128 {
+    ctx.base_fee_per_gas.unwrap_or(0) * ctx.gas_used as u128
+}
+
+pub fn tx_count(ctx: &BlockContext) -> usize {
+    ctx.tx_hashes.len()
+}
+
+/// Number of distinct accounts represented anywhere in the block BAL.
+///
+/// `BlockAccess::touched` currently contains touched-only accounts, so reads
+/// and writes must also contribute their addresses.
+pub fn unique_accounts_touched(block: &BlockAccess) -> usize {
+    let mut accounts: HashSet<Address> = block.touched.iter().copied().collect();
+
+    accounts.extend(block.reads().iter().map(StateKey::address));
+    accounts.extend(block.writes.iter().map(|write| write.key.address()));
+
+    accounts.len()
 }
 
 /// Compute the full set of [`BlockMetrics`] for a dependency graph.
