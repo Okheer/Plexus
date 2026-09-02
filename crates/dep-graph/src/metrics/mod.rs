@@ -57,7 +57,6 @@ pub fn unique_accounts_touched(block: &BlockAccess) -> usize {
     accounts.len()
 }
 
-
 /// Number of distinct storage slots read or written anywhere in the block.
 ///
 /// Block-level reads and all write-log positions, including system writes, are
@@ -66,8 +65,14 @@ pub fn unique_storage_slots_touched(block: &BlockAccess) -> usize {
     let mut slots = HashSet::new();
 
     for key in block.reads() {
-        if let StateKey::StorageSlot {address,slot} = key{
-            slots.insert((*address,*slot));
+        if let StateKey::StorageSlot { address, slot } = key {
+            slots.insert((*address, *slot));
+        }
+    }
+
+    for write in &block.writes {
+        if let StateKey::StorageSlot { address, slot } = &write.key {
+            slots.insert((*address, *slot));
         }
     }
 
@@ -107,9 +112,7 @@ pub fn hot_slots(
 
     for access_set in access_sets {
         for key in &access_set.writes {
-            if matches!(key, StateKey::StorageSlot { .. })
-                && key.address() != ctx.coinbase
-            {
+            if matches!(key, StateKey::StorageSlot { .. }) && key.address() != ctx.coinbase {
                 *writer_counts.entry(key.clone()).or_insert(0) += 1;
             }
         }
@@ -149,6 +152,50 @@ pub fn multi_writer_slot_ratio(access_sets: &[AccessSet]) -> f64 {
         .count();
 
     multi_writer_slots as f64 / writer_counts.len() as f64
+}
+
+/// Gini coefficient over transaction-attributed write counts per active address.
+pub fn write_concentration_gini(access_sets: &[AccessSet], ctx: &BlockContext) -> f64 {
+    let mut writes_per_address: HashMap<Address, usize> = HashMap::new();
+
+    for access_set in access_sets {
+        for key in &access_set.writes {
+            let address = key.address();
+
+            if address != ctx.coinbase {
+                *writes_per_address.entry(address).or_insert(0) += 1;
+            }
+        }
+    }
+
+    if writes_per_address.len() < 2 {
+        return 0.0;
+    }
+
+    let mut counts: Vec<f64> = writes_per_address
+        .into_values()
+        .map(|count| count as f64)
+        .collect();
+
+    counts.sort_by(f64::total_cmp);
+
+    let population_size = counts.len() as f64;
+    let total_writes: f64 = counts.iter().sum();
+
+    if total_writes == 0.0 {
+        return 0.0;
+    }
+
+    let weighted_sum: f64 = counts
+        .iter()
+        .enumerate()
+        .map(|(index, count)| (index as f64 + 1.0) * count)
+        .sum();
+
+    let gini = (2.0 * weighted_sum) / (population_size * total_writes)
+        - (population_size + 1.0) / population_size;
+
+    gini.clamp(0.0, 1.0)
 }
 
 /// Compute the full set of [`BlockMetrics`] for a dependency graph.
@@ -229,7 +276,80 @@ fn weakly_connected_component_sizes(graph: &DepGraph) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::types::ConflictType;
+    use alloy_primitives::{Bytes, B256, U256};
+    use types::types::{ConflictType, ReadAttribution, TxPosition, WriteEntry, WriteValue};
+
+    fn addr(byte: u8) -> Address {
+        Address::from([byte; 20])
+    }
+
+    fn b256(byte: u8) -> B256 {
+        B256::from([byte; 32])
+    }
+
+    fn storage_key(address_byte: u8, slot_byte: u8) -> StateKey {
+        StateKey::StorageSlot {
+            address: addr(address_byte),
+            slot: b256(slot_byte),
+        }
+    }
+
+    fn context(coinbase: Address) -> BlockContext {
+        BlockContext {
+            number: 1,
+            hash: b256(0xAA),
+            parent_hash: b256(0xBB),
+            coinbase,
+            chain_id: 1,
+            timestamp: 1,
+            base_fee_per_gas: Some(1),
+            gas_limit: 30_000_000,
+            gas_used: 1,
+            tx_hashes: Vec::new(),
+            block_access_list_hash: None,
+        }
+    }
+
+    fn access_set(tx_index: usize, writes: Vec<StateKey>) -> AccessSet {
+        AccessSet {
+            tx_index,
+            tx_hash: b256(tx_index as u8),
+            reads: ReadAttribution::PerTransaction(HashSet::new()),
+            writes: writes.into_iter().collect(),
+        }
+    }
+
+    fn write_entry(key: StateKey) -> WriteEntry {
+        let value = match &key {
+            StateKey::StorageSlot { .. } => WriteValue::Storage(B256::ZERO),
+            StateKey::Balance(_) => WriteValue::Balance(U256::ZERO),
+            StateKey::Nonce(_) => WriteValue::Nonce(0),
+            StateKey::Code(_) => WriteValue::Code(Bytes::new()),
+        };
+
+        WriteEntry {
+            position: TxPosition::Transaction(0),
+            key,
+            value,
+        }
+    }
+
+    fn block_access(
+        reads: Vec<StateKey>,
+        writes: Vec<StateKey>,
+        touched: Vec<Address>,
+    ) -> BlockAccess {
+        BlockAccess::new(
+            context(addr(0xFE)),
+            writes.into_iter().map(write_entry).collect(),
+            reads.into_iter().collect(),
+            touched.into_iter().collect(),
+        )
+    }
+
+    fn approximately_equal(left: f64, right: f64) -> bool {
+        (left - right).abs() < 1e-9
+    }
 
     /// Add a directed conflict edge between two transaction positions.
     fn add_edge(g: &mut DepGraph, from: usize, to: usize) {
@@ -341,5 +461,36 @@ mod tests {
                 weakly_connected_component_sizes(&g).len()
             );
         }
+    }
+
+    #[test]
+    fn empty_bal_metrics_return_zero() {
+        let block = block_access(Vec::new(), Vec::new(), Vec::new());
+        let ctx = context(addr(0xFE));
+
+        assert_eq!(unique_accounts_touched(&block), 0);
+        assert_eq!(unique_storage_slots_touched(&block), 0);
+        assert!(hot_slots(&[], &ctx, 10).is_empty());
+        assert_eq!(write_concentration_gini(&[], &ctx), 0.0);
+    }
+
+    #[test]
+    fn unique_accounts_include_touched_reads_and_writes() {
+        let block = block_access(
+            vec![storage_key(0x02, 0x01)],
+            vec![StateKey::Balance(addr(0x03)), StateKey::Nonce(addr(0x03))],
+            vec![addr(0x01), addr(0x01)],
+        );
+
+        assert_eq!(unique_accounts_touched(&block), 3);
+    }
+
+    #[test]
+    fn repeated_storage_writes_count_once() {
+        let repeated = storage_key(0x01, 0x01);
+
+        let block = block_access(Vec::new(), vec![repeated.clone(), repeated], Vec::new());
+
+        assert_eq!(unique_storage_slots_touched(&block), 1);
     }
 }
