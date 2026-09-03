@@ -1,5 +1,5 @@
-//! Metrics over a built [`crate::graph::DepGraph`], such as parallelism and
-//! task-group (weakly connected component) statistics.
+//! Metrics derived from dependency graphs, block metadata, complete block-level
+//! BAL access, and transaction-attributed state writes.
 
 use crate::graph::DepGraph;
 use alloy_primitives::Address;
@@ -28,7 +28,7 @@ pub fn independence_coefficient(graph: &DepGraph) -> f64 {
     independent as f64 / graph.tx_count as f64
 }
 
-pub fn gas_utilisation_ratio(ctx: &BlockContext) -> f64 {
+pub fn gas_utilization_ratio(ctx: &BlockContext) -> f64 {
     if ctx.gas_limit == 0 {
         return 0.0;
     }
@@ -128,30 +128,6 @@ pub fn hot_slots(
 
     ranked.truncate(top_k);
     ranked
-}
-
-/// Fraction of unique written storage slots written by at least two transactions.
-pub fn multi_writer_slot_ratio(access_sets: &[AccessSet]) -> f64 {
-    let mut writer_counts: HashMap<StateKey, usize> = HashMap::new();
-
-    for access_set in access_sets {
-        for key in &access_set.writes {
-            if matches!(key, StateKey::StorageSlot { .. }) {
-                *writer_counts.entry(key.clone()).or_insert(0) += 1;
-            }
-        }
-    }
-
-    if writer_counts.is_empty() {
-        return 0.0;
-    }
-
-    let multi_writer_slots = writer_counts
-        .values()
-        .filter(|&&writer_count| writer_count >= 2)
-        .count();
-
-    multi_writer_slots as f64 / writer_counts.len() as f64
 }
 
 /// Gini coefficient over transaction-attributed write counts per active address.
@@ -612,5 +588,66 @@ mod tests {
 
         assert!(approximately_equal(result, 0.25));
         assert!((0.0..=1.0).contains(&result));
+    }
+
+    #[test]
+    fn gas_utilization_ratio_handles_zero_half_and_full_blocks() {
+        let mut ctx = context(addr(0xFE));
+        ctx.gas_limit = 100;
+
+        ctx.gas_used = 0;
+        assert_eq!(gas_utilization_ratio(&ctx), 0.0);
+
+        ctx.gas_used = 50;
+        assert_eq!(gas_utilization_ratio(&ctx), 0.5);
+
+        ctx.gas_used = 100;
+        assert_eq!(gas_utilization_ratio(&ctx), 1.0);
+    }
+
+    #[test]
+    fn gas_utilization_ratio_returns_zero_for_zero_gas_limit() {
+        let mut ctx = context(addr(0xFE));
+        ctx.gas_limit = 0;
+        ctx.gas_used = 100;
+
+        assert_eq!(gas_utilization_ratio(&ctx), 0.0);
+    }
+
+    #[test]
+    fn eth_burned_is_zero_without_base_fee() {
+        let mut ctx = context(addr(0xFE));
+        ctx.base_fee_per_gas = None;
+        ctx.gas_used = 1_000_000;
+
+        assert_eq!(eth_burned_wei(&ctx), 0);
+    }
+
+    #[test]
+    fn eth_burned_multiplies_base_fee_by_gas_used() {
+        let mut ctx = context(addr(0xFE));
+        ctx.base_fee_per_gas = Some(10);
+        ctx.gas_used = 21_000;
+
+        assert_eq!(eth_burned_wei(&ctx), 210_000);
+    }
+
+    #[test]
+    fn tx_count_returns_number_of_transaction_hashes() {
+        let mut ctx = context(addr(0xFE));
+
+        assert_eq!(tx_count(&ctx), 0);
+
+        ctx.tx_hashes = vec![b256(0x01), b256(0x02), b256(0x03)];
+
+        assert_eq!(tx_count(&ctx), 3);
+    }
+
+    #[test]
+    fn hot_slots_returns_empty_when_top_k_is_zero() {
+        let access_sets = vec![access_set(0, vec![storage_key(0x01, 0x01)])];
+        let ctx = context(addr(0xFE));
+
+        assert!(hot_slots(&access_sets, &ctx, 0).is_empty());
     }
 }
