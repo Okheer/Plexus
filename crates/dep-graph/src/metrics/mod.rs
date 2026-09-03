@@ -486,11 +486,131 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_account_accesses_count_once() {
+        let block = block_access(
+            vec![storage_key(0x01, 0x01), storage_key(0x01, 0x02)],
+            vec![
+                StateKey::Balance(addr(0x01)),
+                StateKey::Nonce(addr(0x01)),
+                StateKey::Code(addr(0x01)),
+            ],
+            vec![addr(0x01)],
+        );
+
+        assert_eq!(unique_accounts_touched(&block), 1);
+    }
+
+    #[test]
+    fn unique_storage_slots_include_reads_and_writes() {
+        let block = block_access(
+            vec![storage_key(0x01, 0x01)],
+            vec![storage_key(0x02, 0x02)],
+            Vec::new(),
+        );
+
+        assert_eq!(unique_storage_slots_touched(&block), 2);
+    }
+
+    #[test]
     fn repeated_storage_writes_count_once() {
         let repeated = storage_key(0x01, 0x01);
 
         let block = block_access(Vec::new(), vec![repeated.clone(), repeated], Vec::new());
 
         assert_eq!(unique_storage_slots_touched(&block), 1);
+    }
+
+    #[test]
+    fn non_storage_keys_are_excluded_from_storage_slot_count() {
+        let block = block_access(
+            vec![storage_key(0x01, 0x01), StateKey::Balance(addr(0x02))],
+            vec![
+                StateKey::Balance(addr(0x03)),
+                StateKey::Nonce(addr(0x04)),
+                StateKey::Code(addr(0x05)),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(unique_storage_slots_touched(&block), 1);
+    }
+
+    #[test]
+    fn hot_slots_rank_by_transaction_writer_count() {
+        let shared = storage_key(0x01, 0x01);
+        let single = storage_key(0x02, 0x01);
+        let coinbase_slot = storage_key(0xFE, 0x01);
+
+        let access_sets = vec![
+            access_set(
+                0,
+                vec![
+                    shared.clone(),
+                    shared.clone(),
+                    single.clone(),
+                    coinbase_slot.clone(),
+                ],
+            ),
+            access_set(1, vec![shared.clone(), coinbase_slot]),
+        ];
+
+        let result = hot_slots(&access_sets, &context(addr(0xFE)), 10);
+
+        assert_eq!(result, vec![(shared, 2), (single, 1)]);
+    }
+
+    #[test]
+    fn hot_slots_break_ties_deterministically() {
+        let lower_slot = storage_key(0x01, 0x02);
+        let higher_slot = storage_key(0x01, 0x09);
+        let higher_address = storage_key(0x02, 0x01);
+
+        let access_sets = vec![access_set(
+            0,
+            vec![higher_address, higher_slot.clone(), lower_slot.clone()],
+        )];
+
+        let result = hot_slots(&access_sets, &context(addr(0xFE)), 2);
+
+        assert_eq!(result, vec![(lower_slot, 1), (higher_slot, 1)]);
+    }
+    #[test]
+    fn gini_is_zero_for_one_or_equally_written_addresses() {
+        let ctx = context(addr(0xFE));
+
+        let one_address = vec![access_set(
+            0,
+            vec![StateKey::Balance(addr(0x01)), StateKey::Nonce(addr(0x01))],
+        )];
+        assert_eq!(write_concentration_gini(&one_address, &ctx), 0.0);
+
+        let equal = vec![access_set(
+            0,
+            vec![StateKey::Balance(addr(0x01)), StateKey::Balance(addr(0x02))],
+        )];
+        assert_eq!(write_concentration_gini(&equal, &ctx), 0.0);
+    }
+
+    #[test]
+    fn gini_detects_unequal_writes_and_excludes_coinbase() {
+        let ctx = context(addr(0xFE));
+
+        let access_sets = vec![
+            access_set(
+                0,
+                vec![
+                    StateKey::Balance(addr(0x01)),
+                    StateKey::Nonce(addr(0x01)),
+                    StateKey::Balance(addr(0x02)),
+                    StateKey::Balance(addr(0xFE)),
+                ],
+            ),
+            access_set(1, vec![StateKey::Code(addr(0x01))]),
+        ];
+
+        let result = write_concentration_gini(&access_sets, &ctx);
+
+        assert!(approximately_equal(result, 0.25));
+        assert!((0.0..=1.0).contains(&result));
     }
 }
